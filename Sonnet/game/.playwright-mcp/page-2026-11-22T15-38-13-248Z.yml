@@ -1,0 +1,63 @@
+- generic [active] [ref=f5e1]:
+  - generic:
+    - generic:
+      - text: Forging the world…
+      - generic: painting the portraits
+  - generic: FPS 2 · 542.7 ms · draws 296 · tris 1153k · ×1.00
+  - generic:
+    - generic [ref=f5e6]:
+      - heading "Steam Wings" [level=1] [ref=f5e7]
+      - generic [ref=f5e8]: Aerial combat · four teams · one sky
+      - tablist "Races" [ref=f5e9]:
+        - tab "Humans Humans" [selected] [ref=f5e10] [cursor=pointer]:
+          - img "Humans" [ref=f5e11]
+          - generic [ref=f5e12]: Humans
+        - tab "Dwarves Dwarves" [ref=f5e13] [cursor=pointer]:
+          - img "Dwarves" [ref=f5e14]
+          - generic [ref=f5e15]: Dwarves
+        - tab "Elves Elves" [ref=f5e16] [cursor=pointer]:
+          - img "Elves" [ref=f5e17]
+          - generic [ref=f5e18]: Elves
+        - tab "Orcs Orcs" [ref=f5e19] [cursor=pointer]:
+          - img "Orcs" [ref=f5e20]
+          - generic [ref=f5e21]: Orcs
+      - generic [ref=f5e22]:
+        - heading "Humans" [level=2] [ref=f5e23]
+        - generic [ref=f5e24]: Brass Kestrel · Steam biplane
+        - paragraph [ref=f5e25]: Inventive and adaptable, humans build quick, easy-to-mend biplanes around a roaring steam boiler. The Kestrel is a balanced dogfighter, with a ball turret slung beneath to guard its belly.
+        - paragraph [ref=f5e26]: "Pilot: twin synchronised machine guns.Gunner (belly ball): Twin Gatling — a storm of fast, light bullets."
+        - generic [ref=f5e27]:
+          - generic [ref=f5e28]:
+            - generic [ref=f5e29]: Speed
+            - generic [ref=f5e32]: "7"
+          - generic [ref=f5e33]:
+            - generic [ref=f5e34]: Armor
+            - generic [ref=f5e37]: "5"
+          - generic [ref=f5e38]:
+            - generic [ref=f5e39]: Maneuverability
+            - generic [ref=f5e42]: "6"
+          - generic [ref=f5e43]:
+            - generic [ref=f5e44]: Firepower
+            - generic [ref=f5e47]: "6"
+      - button "Take to the skies" [ref=f5e49] [cursor=pointer]
+      - generic [ref=f5e50]:
+        - generic [ref=f5e51]: Mouse
+        - text: steer · aim turret
+        - generic [ref=f5e52]: W / S
+        - text: throttle ·
+        - generic [ref=f5e53]: A / D
+        - text: roll
+        - generic [ref=f5e54]: LMB
+        - text: fire ·
+        - generic [ref=f5e55]: C
+        - text: switch pilot ⇄ gunner
+        - generic [ref=f5e56]: 1–4
+        - text: choose race ·
+        - generic [ref=f5e57]: Enter
+        - text: start
+    - generic [ref=f5e58]:
+      - button "Morning" [ref=f5e59] [cursor=pointer]
+      - button "Day" [ref=f5e60] [cursor=pointer]
+      - button "Dusk" [ref=f5e61] [cursor=pointer]
+      - button "Night" [ref=f5e62] [cursor=pointer]
+    - generic: Four teams of three aircraft — everyone fights everyone. Last team in the air wins.

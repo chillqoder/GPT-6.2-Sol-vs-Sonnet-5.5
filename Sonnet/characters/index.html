@@ -1,0 +1,2722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23c8993f' stroke='%231b120c' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%231b120c'/%3E%3C/svg%3E">
+<title>Steam Wings — Aircraft Hangar</title>
+<style>
+  :root {
+    --brass: #c8993f; --brass-hi: #f0c870; --copper: #b4643a;
+    --ink: #1b120c; --panel: rgba(30, 20, 13, .9);
+    --accent: #d9a441; --accent-dim: #7a5a1c; --accent-glow: rgba(217, 164, 65, .55);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: #1a120d; color: #f0e2c4;
+    font-family: "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    user-select: none; -webkit-user-select: none;
+  }
+  canvas#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 55% 50%, transparent 52%, rgba(12, 6, 2, .55) 100%);
+  }
+  .tool-btn {
+    font: inherit; font-size: 14px; letter-spacing: .06em; color: #f4e4bf; cursor: pointer; white-space: nowrap;
+    padding: 9px 16px; border-radius: 4px;
+    background: linear-gradient(#4a3322, #2a1c12);
+    border: 1px solid var(--brass); box-shadow: 0 0 0 2px #1b120c, 0 4px 12px rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 220, 150, .25);
+    transition: filter .2s, transform .1s, box-shadow .2s;
+  }
+  .tool-btn:hover { filter: brightness(1.25); }
+  .tool-btn:active { transform: translateY(1px); }
+  .tool-btn[aria-pressed="true"] { background: linear-gradient(#8c6a2c, #5a421b); color: #fff3d0; box-shadow: 0 0 0 2px #1b120c, 0 0 14px rgba(240, 190, 90, .45), inset 0 1px 0 rgba(255, 230, 170, .4); }
+  .tool-btn .ico { display: inline-block; margin-right: 6px; }
+  .tool-btn[aria-pressed="true"] .ico { animation: spin 3s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #toolbar { position: fixed; top: 18px; right: 18px; display: flex; gap: 10px; z-index: 5; }
+  /* ---------- race HUD (top left) ---------- */
+  #hud {
+    position: fixed; top: 18px; left: 18px; width: min(372px, calc(100vw - 36px)); z-index: 5;
+    max-height: calc(100vh - 36px); overflow-y: auto; scrollbar-width: thin;
+    background: linear-gradient(180deg, rgba(44, 30, 19, .93), rgba(24, 16, 10, .93));
+    border: 1px solid var(--accent); border-radius: 12px; padding: 12px 12px 0;
+    box-shadow: 0 0 0 3px #1b120c, 0 10px 34px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 220, 150, .18);
+    transition: border-color .5s, box-shadow .5s;
+  }
+  #hud::before, #hud::after {                       /* corner rivets */
+    content: ""; position: absolute; width: 7px; height: 7px; border-radius: 50%; top: 5px;
+    background: radial-gradient(circle at 35% 30%, #ffe6a8, #9a6f2a 70%, #3b2a10);
+  }
+  #hud::before { left: 5px; } #hud::after { right: 5px; }
+  #portraits { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
+  .portrait {
+    position: relative; aspect-ratio: 1; padding: 0; margin: 0; cursor: pointer; overflow: hidden; border-radius: 8px;
+    border: 2px solid #5a4630; background: #1d140d; color: inherit; font: inherit;
+    transition: border-color .3s, box-shadow .3s, transform .2s;
+  }
+  .portrait img { width: 100%; height: 100%; display: block; object-fit: cover; filter: saturate(.55) brightness(.62); transition: filter .35s, transform .5s; }
+  .portrait:hover img { filter: saturate(.9) brightness(.9); transform: scale(1.05); }
+  .portrait span {
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 2px 4px; text-align: center;
+    font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: #e9d7b0; text-shadow: 0 1px 2px #000;
+    background: linear-gradient(transparent, rgba(8, 5, 2, .88));
+  }
+  .portrait[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px #1b120c, 0 0 16px var(--accent-glow); transform: translateY(-1px); }
+  .portrait[aria-selected="true"] img { filter: none; }
+  .portrait[aria-selected="true"] span { color: #fff6dc; }
+  .portrait:focus-visible { outline: 2px solid var(--brass-hi); outline-offset: 2px; }
+  #info { position: relative; margin: 14px -12px 0; padding: 18px 18px 16px; border-top: 1px solid var(--accent); transition: border-color .5s; }
+  #info::before {                                   /* notch pointing at the selected portrait */
+    content: ""; position: absolute; top: -8px; left: var(--notch-x, 50%); width: 14px; height: 14px;
+    transform: translateX(-50%) rotate(45deg); background: #2c1e13; border-left: 1px solid var(--accent); border-top: 1px solid var(--accent);
+    transition: left .45s cubic-bezier(.3, .9, .3, 1), border-color .5s;
+  }
+  #info-body { transition: opacity .2s, transform .2s; }
+  #info-body.swap { opacity: 0; transform: translateY(5px); }
+  #info-name { margin: 0; font-size: 27px; font-weight: 600; letter-spacing: .06em; font-variant: small-caps; color: #fff0cc; text-shadow: 0 2px 6px rgba(0, 0, 0, .6); }
+  #info-craft { margin: 2px 0 10px; font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); transition: color .5s; }
+  #info-desc { margin: 0 0 14px; font-size: 14.5px; line-height: 1.55; color: #e6d6b4; }
+  .stat { display: grid; grid-template-columns: 112px 1fr 24px; align-items: center; gap: 10px; margin: 7px 0; font-size: 13px; letter-spacing: .05em; color: #d8c49a; }
+  .stat b { text-align: right; color: #fff0cc; font-weight: 600; }
+  .bar { position: relative; height: 12px; border: 1px solid #5a4630; border-radius: 3px; background: #140d08; overflow: hidden; }
+  .bar i {
+    position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--v, 0) * 100%);
+    background: linear-gradient(90deg, var(--accent-dim), var(--accent)); box-shadow: 0 0 10px var(--accent-glow);
+    transition: width .9s cubic-bezier(.2, .85, .25, 1), background .5s;
+  }
+  .bar::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), rgba(12, 7, 3, .95) calc(10% - 2px) 10%); }
+  /* floating crew tags + hint */
+  .tag {
+    position: fixed; left: 0; top: 0; z-index: 4; pointer-events: none; padding: 3px 11px; font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+    color: #fff0cc; background: rgba(28, 18, 11, .82); border: 1px solid var(--accent); border-radius: 3px; white-space: nowrap; transition: opacity .3s, border-color .5s;
+  }
+  #hint { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 4; font-size: 12px; letter-spacing: .08em; color: rgba(240, 226, 196, .62); pointer-events: none; text-shadow: 0 1px 3px #000; white-space: nowrap; }
+  @media (max-width: 700px) {
+    #hint { display: none; }
+    #hud { top: 10px; left: 10px; width: calc(100vw - 20px); padding: 10px 10px 0; }
+    #info { margin: 10px -10px 0; padding: 14px 14px 12px; }
+    #info-name { font-size: 22px; } #info-desc { font-size: 13px; line-height: 1.45; margin-bottom: 10px; }
+    .stat { grid-template-columns: 104px 1fr 22px; margin: 5px 0; font-size: 12.5px; }
+    .portrait span { font-size: 9.5px; letter-spacing: .06em; }
+    #toolbar { top: auto; bottom: 12px; right: auto; left: 50%; transform: translateX(-50%); }
+    .tag { display: none; }
+  }
+  @media (max-height: 640px) { #info-desc { font-size: 13px; line-height: 1.45; } .stat { margin: 4px 0; } }
+  #loading {
+    position: fixed; inset: 0; display: grid; place-items: center; z-index: 50; background: #1a120d;
+    color: var(--brass-hi); font-size: 20px; letter-spacing: .12em; transition: opacity .8s;
+  }
+  #loading.done { opacity: 0; pointer-events: none; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="vignette"></div>
+<aside id="hud" aria-label="Race selection">
+  <div id="portraits" role="tablist" aria-label="Races"></div>
+  <div id="info" role="tabpanel">
+    <div id="info-body">
+      <h2 id="info-name"></h2>
+      <div id="info-craft"></div>
+      <p id="info-desc"></p>
+      <div id="stats" aria-label="Aircraft statistics"></div>
+    </div>
+  </div>
+</aside>
+<div class="tag" id="tag-pilot">Pilot</div>
+<div class="tag" id="tag-gunner">Gunner</div>
+<div id="hint">Drag: rotate · Wheel: zoom · Right-drag: pan · 1–4: switch race · R: auto-rotate</div>
+<div id="toolbar">
+  <button class="tool-btn" id="btn-rotate" aria-pressed="true" title="Toggle camera auto-rotation (R)"><span class="ico">⚙</span>Auto-rotate</button>
+  <button class="tool-btn" id="btn-reset" title="Reset camera (Space)">Reset view</button>
+</div>
+<div id="loading">Firing up the boilers…</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ====================================================================
+ *  0. CORE UTILITIES  (seeded random, procedural textures, materials,
+ *     geometry helpers) — shared by every stage below
+ * ==================================================================== */
+
+/** Small deterministic PRNG so every procedural model looks identical on each load. */
+function rng(seed = 1) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const lerp = THREE.MathUtils.lerp;
+const clamp = THREE.MathUtils.clamp;
+const TAU = Math.PI * 2;
+
+/** Create a CanvasTexture from a draw callback. */
+function canvasTexture(w, h, draw, { data = false, repeat = true } = {}) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  draw(g, w, h);
+  const t = new THREE.CanvasTexture(c);
+  if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = data ? THREE.NoColorSpace : THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+function speckle(g, w, h, r, count, colors, size = [1, 2.5]) {
+  for (let i = 0; i < count; i++) {
+    const x = r() * w, y = r() * h, s = lerp(size[0], size[1], r());
+    g.fillStyle = colors[(r() * colors.length) | 0];
+    g.fillRect(x, y, s, s);
+  }
+}
+
+/** Riveted metal-plate texture. Returns { map, bump } with identical layout. */
+function plateTexture({ color = '#6b6e72', cols = 4, rows = 4, size = 512, seed = 1, rivetSize = 3.2, grime = .5, seam = true } = {}) {
+  const make = (bump) => canvasTexture(size, size, (g, w, h) => {
+    const r = rng(seed);
+    g.fillStyle = bump ? '#808080' : color; g.fillRect(0, 0, w, h);
+    const pw = w / cols, ph = h / rows;
+    for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+      const x = i * pw, y = j * ph, tone = r() - .5;
+      if (bump) { const v = (128 + tone * 24) | 0; g.fillStyle = `rgb(${v},${v},${v})`; }
+      else g.fillStyle = tone > 0 ? `rgba(255,255,255,${tone * .16})` : `rgba(0,0,0,${-tone * .3})`;
+      g.fillRect(x, y, pw, ph);
+      if (seam) {
+        g.lineWidth = 3; g.strokeStyle = bump ? '#202020' : 'rgba(0,0,0,.7)'; g.strokeRect(x + 1.5, y + 1.5, pw - 3, ph - 3);
+        g.lineWidth = 1.2; g.strokeStyle = bump ? '#c8c8c8' : 'rgba(255,255,255,.15)'; g.strokeRect(x + 4, y + 4, pw - 8, ph - 8);
+      }
+      const ins = Math.max(9, rivetSize * 3);
+      for (const [rx, ry] of [[ins, ins], [pw - ins, ins], [ins, ph - ins], [pw - ins, ph - ins], [pw / 2, ins], [pw / 2, ph - ins]]) {
+        g.beginPath(); g.arc(x + rx, y + ry, rivetSize, 0, TAU);
+        if (bump) { g.fillStyle = '#f4f4f4'; g.fill(); }
+        else {
+          g.fillStyle = 'rgba(0,0,0,.5)'; g.fill();
+          g.beginPath(); g.arc(x + rx - .5, y + ry - .6, rivetSize * .78, 0, TAU); g.fillStyle = 'rgba(255,255,255,.28)'; g.fill();
+        }
+      }
+    }
+    // vertical grime streaks + speckles
+    const n = (60 * grime) | 0;
+    for (let k = 0; k < n; k++) {
+      const x = r() * w, y = r() * h, sw = 2 + r() * 9, sh = 30 + r() * 170, a = .03 + r() * .07;
+      if (!bump) { g.fillStyle = `rgba(10,6,2,${a})`; g.fillRect(x, y, sw, sh); }
+    }
+    speckle(g, w, h, r, 500 * grime, bump ? ['#707070', '#909090'] : ['rgba(0,0,0,.25)', 'rgba(255,255,255,.12)']);
+  }, { data: bump });
+  return { map: make(false), bump: make(true) };
+}
+
+/** Radial deck texture for the display podium (viewed from the top cap of a cylinder). */
+function deckTexture({ seed = 5, rings = [.3, .52, .7], hazard = true } = {}) {
+  return canvasTexture(1024, 1024, (g, w, h) => {
+    const r = rng(seed), c = w / 2;
+    g.fillStyle = '#2e2924'; g.fillRect(0, 0, w, h);
+    speckle(g, w, h, r, 6000, ['rgba(255,255,255,.05)', 'rgba(0,0,0,.18)'], [1, 3]);
+    // radial plate seams
+    g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 3;
+    for (let i = 0; i < 24; i++) { const a = (i / 24) * TAU; g.beginPath(); g.moveTo(c + Math.cos(a) * c * .14, c + Math.sin(a) * c * .14); g.lineTo(c + Math.cos(a) * c, c + Math.sin(a) * c); g.stroke(); }
+    // concentric brass inlay lines
+    for (const k of rings) {
+      g.lineWidth = 7; g.strokeStyle = '#8a6a2c'; g.beginPath(); g.arc(c, c, c * k, 0, TAU); g.stroke();
+      g.lineWidth = 2; g.strokeStyle = '#e4bf6a'; g.beginPath(); g.arc(c, c, c * k, 0, TAU); g.stroke();
+      g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.6)'; g.beginPath(); g.arc(c, c, c * k - 7, 0, TAU); g.stroke();
+    }
+    // compass star
+    g.strokeStyle = '#a07c36'; g.lineWidth = 3;
+    for (let i = 0; i < 16; i++) { const a = (i / 16) * TAU, len = i % 4 === 0 ? .52 : i % 2 === 0 ? .36 : .22; g.beginPath(); g.moveTo(c, c); g.lineTo(c + Math.cos(a) * c * len, c + Math.sin(a) * c * len); g.stroke(); }
+    // hazard ring near rim
+    if (hazard) {
+      const r1 = c * .87, r2 = c * .95, N = 72;
+      for (let i = 0; i < N; i++) {
+        const a0 = (i / N) * TAU, a1 = ((i + 1) / N) * TAU;
+        g.fillStyle = i % 2 ? '#1a1612' : '#a8852f';
+        g.beginPath(); g.arc(c, c, r2, a0, a1); g.arc(c, c, r1, a1, a0, true); g.closePath(); g.fill();
+      }
+      g.lineWidth = 3; g.strokeStyle = '#0d0a07';
+      g.beginPath(); g.arc(c, c, r1, 0, TAU); g.stroke(); g.beginPath(); g.arc(c, c, r2, 0, TAU); g.stroke();
+    }
+    // rivets around the inlay ring
+    for (let i = 0; i < 48; i++) {
+      const a = (i / 48) * TAU, rr = c * .8;
+      g.fillStyle = '#0d0a07'; g.beginPath(); g.arc(c + Math.cos(a) * rr, c + Math.sin(a) * rr, 6, 0, TAU); g.fill();
+      g.fillStyle = '#d3a84e'; g.beginPath(); g.arc(c + Math.cos(a) * rr - 1, c + Math.sin(a) * rr - 1, 4, 0, TAU); g.fill();
+    }
+    // outer border
+    g.lineWidth = 8; g.strokeStyle = '#120e0a'; g.beginPath(); g.arc(c, c, c - 4, 0, TAU); g.stroke();
+  }, { repeat: false });
+}
+
+/** Soft round blob used by particles / glows / clouds. */
+function softDotTexture() {
+  return canvasTexture(64, 64, (g, w, h) => {
+    const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(.35, 'rgba(255,255,255,.55)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  }, { repeat: false });
+}
+
+function cloudTexture(seed) {
+  return canvasTexture(256, 128, (g, w, h) => {
+    const r = rng(seed);
+    for (let i = 0; i < 26; i++) {
+      const x = w * (.16 + .68 * r()), y = h * (.38 + .26 * r());
+      const rad = h * (.16 + .3 * r()) * (1 - Math.abs(x / w - .5) * .9);
+      const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+      gr.addColorStop(0, 'rgba(255,255,255,.5)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(x, y, rad, 0, TAU); g.fill();
+    }
+    g.globalCompositeOperation = 'destination-in';
+    const m = g.createLinearGradient(0, 0, 0, h);
+    m.addColorStop(0, 'rgba(0,0,0,1)'); m.addColorStop(.58, 'rgba(0,0,0,1)'); m.addColorStop(.8, 'rgba(0,0,0,0)');
+    g.fillStyle = m; g.fillRect(0, 0, w, h);
+  }, { repeat: false });
+}
+
+/* ---------- materials ---------- */
+const metal = (color, rough = .35, metalness = 1, extra = {}) =>
+  new THREE.MeshStandardMaterial({ color, roughness: rough, metalness, ...extra });
+const matte = (color, rough = .8, extra = {}) =>
+  new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: 0, ...extra });
+
+const M = {
+  brass: metal('#c9973a', .32),
+  brassPolished: metal('#ecc464', .16),
+  brassDark: metal('#8a6428', .45),
+  copper: metal('#b8673a', .33),
+  copperDark: metal('#7e4326', .45),
+  verdigris: metal('#4f9a82', .5),
+  iron: metal('#3b3d42', .5),
+  ironDark: metal('#222428', .55),
+  steel: metal('#9aa0a8', .28),
+  gunmetal: metal('#51565e', .38),
+  leather: matte('#6a3f22', .72),
+  leatherDark: matte('#3d2616', .75),
+  leatherTan: matte('#9a6a3c', .7),
+  rubber: matte('#141414', .92),
+  bone: matte('#d9ceb0', .7),
+  glass: new THREE.MeshStandardMaterial({ color: '#a8d8e8', roughness: .05, metalness: .1, transparent: true, opacity: .32, depthWrite: false }),
+  glowOrange: new THREE.MeshStandardMaterial({ color: '#ff8a30', emissive: '#ff6a10', emissiveIntensity: 2.2, roughness: .4 }),
+  glowAmber: new THREE.MeshStandardMaterial({ color: '#ffc070', emissive: '#ffa040', emissiveIntensity: 2.6, roughness: .4 }),
+};
+
+/* ---------- geometry / object helpers ---------- */
+
+/** Box with UVs scaled to world size so surface textures keep a constant density. */
+function boxGeo(w, h, d, density = 1) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  const uv = g.attributes.uv, dims = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+  for (let i = 0; i < uv.count; i++) {
+    const [a, b] = dims[(i / 4) | 0];
+    uv.setXY(i, uv.getX(i) * a * density, uv.getY(i) * b * density);
+  }
+  return g;
+}
+const box = (w, h, d, mat, density = 1) => new THREE.Mesh(boxGeo(w, h, d, density), mat);
+const cyl = (rt, rb, h, mat, seg = 24) => new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
+/** Cylinder lying along +Z; `rt` is the end towards +Z (the nose). */
+const cylZ = (rt, rb, len, mat, seg = 24) => {
+  const g = new THREE.CylinderGeometry(rt, rb, len, seg); g.rotateX(Math.PI / 2); return new THREE.Mesh(g, mat);
+};
+/** Cylinder lying along X. */
+const cylX = (r1, r2, len, mat, seg = 24) => {
+  const g = new THREE.CylinderGeometry(r1, r2, len, seg); g.rotateZ(-Math.PI / 2); return new THREE.Mesh(g, mat);
+};
+const sphere = (r, mat, ws = 24, hs = 16) => new THREE.Mesh(new THREE.SphereGeometry(r, ws, hs), mat);
+const torus = (R, r, mat, rs = 10, ts = 32) => new THREE.Mesh(new THREE.TorusGeometry(R, r, rs, ts), mat);
+const cone = (r, h, mat, seg = 16) => new THREE.Mesh(new THREE.ConeGeometry(r, h, seg), mat);
+
+/** Place an object into a parent: add(parent, obj, x,y,z, rx,ry,rz) */
+function add(parent, obj, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
+  obj.position.set(x, y, z); obj.rotation.set(rx, ry, rz); parent.add(obj); return obj;
+}
+const group = (name = '') => { const g = new THREE.Group(); g.name = name; return g; };
+
+/** Thin cylinder connecting two points (struts, wires, rods). */
+function strut(a, b, r, mat, seg = 8) {
+  const d = new THREE.Vector3().subVectors(b, a), len = d.length();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, seg), mat);
+  m.position.copy(a).addScaledVector(d, .5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
+  return m;
+}
+
+/** Instanced rivet heads. points: array of Vector3 (local space of the returned mesh). */
+const _rivetGeo = new THREE.SphereGeometry(1, 8, 5);
+function rivets(points, r, mat = M.brass, flatten = .6) {
+  const im = new THREE.InstancedMesh(_rivetGeo, mat, points.length);
+  const m = new THREE.Matrix4(), s = new THREE.Vector3(r, r * flatten, r);
+  points.forEach((p, i) => { m.compose(p, new THREE.Quaternion(), new THREE.Vector3(r, r, r)); im.setMatrixAt(i, m); });
+  im.instanceMatrix.needsUpdate = true;
+  return im;
+}
+/** Ring of rivet positions around the Z axis (for fuselage cross-sections). */
+function ringPoints(radius, z, n, sx = 1, sy = 1, start = 0) {
+  const pts = [];
+  for (let i = 0; i < n; i++) { const a = start + (i / n) * TAU; pts.push(V3(Math.cos(a) * radius * sx, Math.sin(a) * radius * sy, z)); }
+  return pts;
+}
+
+/** Enable shadows on everything except flagged helpers. */
+function finalize(obj) {
+  obj.traverse(o => {
+    if (o.isMesh || o.isInstancedMesh) {
+      const skip = o.userData.noShadow || (o.material && o.material.transparent && o.material.opacity < .6);
+      o.castShadow = !skip; o.receiveShadow = true;
+    }
+  });
+  return obj;
+}
+
+/** Gear (cogwheel) extruded along +Z. */
+function gearGeometry({ teeth = 16, inner = 1, outer = 1.2, depth = .2, hole = .25, spokeHoles = 0 } = {}) {
+  const s = new THREE.Shape(), da = TAU / teeth;
+  for (let i = 0; i < teeth; i++) {
+    const a = i * da;
+    const pts = [[inner, a], [outer, a + da * .18], [outer, a + da * .5], [inner, a + da * .68]];
+    pts.forEach(([r, ang], k) => { const x = Math.cos(ang) * r, y = Math.sin(ang) * r; (i === 0 && k === 0) ? s.moveTo(x, y) : s.lineTo(x, y); });
+  }
+  s.closePath();
+  const hp = new THREE.Path(); hp.absarc(0, 0, hole, 0, TAU, true); s.holes.push(hp);
+  for (let i = 0; i < spokeHoles; i++) {
+    const a = (i / spokeHoles) * TAU, rr = (hole + inner) * .55, p = new THREE.Path();
+    p.absarc(Math.cos(a) * rr, Math.sin(a) * rr, (inner - hole) * .26, 0, TAU, true); s.holes.push(p);
+  }
+  const g = new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: true, bevelSize: .03, bevelThickness: .03, bevelSegments: 1, curveSegments: 12 });
+  g.translate(0, 0, -depth / 2);
+  return g;
+}
+
+/** Tube with varying radius along a curve (tapered booms, pipes, tails). radiusFn(t) -> r */
+function taperedTube(curve, radiusFn, { segments = 48, radial = 14, ringsFn = null } = {}) {
+  const frames = curve.computeFrenetFrames(segments, false);
+  const pos = [], uv = [], idx = [];
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments, p = curve.getPointAt(t), N = frames.normals[i], B = frames.binormals[i];
+    const r = radiusFn(t) * (ringsFn ? ringsFn(t) : 1);
+    for (let j = 0; j <= radial; j++) {
+      const a = (j / radial) * TAU, c = Math.cos(a), s = Math.sin(a);
+      pos.push(p.x + (N.x * c + B.x * s) * r, p.y + (N.y * c + B.y * s) * r, p.z + (N.z * c + B.z * s) * r);
+      uv.push(j / radial, t * curve.getLength() * 1.0);
+    }
+  }
+  for (let i = 0; i < segments; i++) for (let j = 0; j < radial; j++) {
+    const a = i * (radial + 1) + j, b = a + radial + 1;
+    idx.push(a, b, a + 1, b, b + 1, a + 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  return g;
+}
+
+/** Gauge dial facing +Z. userData.needle is a pivot group that can be rotated on Z. */
+let _gaugeFace = null;
+function createGauge(r = .14, { bezel = M.brass, faceColor = '#efe2c0' } = {}) {
+  const g = group('gauge');
+  if (!_gaugeFace) _gaugeFace = {};
+  if (!_gaugeFace[faceColor]) _gaugeFace[faceColor] = canvasTexture(128, 128, (c, w, h) => {
+    c.fillStyle = faceColor; c.fillRect(0, 0, w, h);
+    c.translate(64, 64);
+    c.strokeStyle = '#2a1c10'; c.fillStyle = '#2a1c10';
+    for (let i = 0; i <= 20; i++) {
+      const a = -Math.PI * 1.25 + (i / 20) * Math.PI * 1.5, big = i % 5 === 0;
+      c.lineWidth = big ? 3 : 1.5;
+      c.beginPath(); c.moveTo(Math.cos(a) * (big ? 38 : 44), Math.sin(a) * (big ? 38 : 44)); c.lineTo(Math.cos(a) * 54, Math.sin(a) * 54); c.stroke();
+    }
+    c.strokeStyle = '#a02818'; c.lineWidth = 6; c.beginPath(); c.arc(0, 0, 46, Math.PI * .05, Math.PI * .25); c.stroke();
+    c.beginPath(); c.arc(0, 18, 4, 0, TAU); c.fill();
+  }, { repeat: false });
+  const face = new THREE.Mesh(new THREE.CircleGeometry(r * .92, 28), new THREE.MeshStandardMaterial({ map: _gaugeFace[faceColor], roughness: .5, metalness: 0 }));
+  face.userData.noShadow = true;
+  g.add(face);
+  add(g, torus(r * .96, r * .16, bezel, 8, 28), 0, 0, r * .04);
+  const gl = add(g, new THREE.Mesh(new THREE.CircleGeometry(r * .9, 24), M.glass), 0, 0, r * .1); gl.userData.noShadow = true;
+  const pivot = add(g, group('needle'), 0, 0, r * .06);
+  add(pivot, box(r * .06, r * .85, r * .02, matte('#a02818', .5)), 0, r * .34, 0);
+  add(pivot, cyl(r * .1, r * .1, r * .06, M.brassDark, 10), 0, 0, 0, Math.PI / 2);
+  pivot.rotation.z = -.6;
+  g.userData.needle = pivot;
+  return g;
+}
+
+/** Valve hand-wheel (decorative, faces +Z). */
+function createValveWheel(r = .14, mat = matte('#a32a1c', .5)) {
+  const g = group('valve');
+  add(g, torus(r, r * .1, mat, 8, 20));
+  add(g, cyl(r * .14, r * .14, r * .3, M.brass, 10), 0, 0, 0, Math.PI / 2);
+  for (let i = 0; i < 3; i++) { const s = box(r * 2, r * .08, r * .08, mat); s.rotation.z = (i / 3) * Math.PI; g.add(s); }
+  return g;
+}
+
+/* ====================================================================
+ *  SHARED AIRCRAFT / CHARACTER BUILDING BLOCKS  (used by stages 2-5)
+ * ==================================================================== */
+
+/** Registry: each race stage registers { aircraft(), crew(role) } here. */
+const RACE_BUILDERS = {};
+
+function scaleUV(geo, su, sv) {
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * su, uv.getY(i) * sv);
+  return geo;
+}
+
+function woodTexture({ base = '#9a6a38', dark = '#5e3a1a', seed = 2, size = 256 } = {}) {
+  return canvasTexture(size, size, (g, w, h) => {
+    const r = rng(seed);
+    g.fillStyle = base; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 110; i++) {
+      const y0 = r() * h, amp = 1 + r() * 4, fr = .01 + r() * .03, ph = r() * 6;
+      g.strokeStyle = dark; g.globalAlpha = .06 + r() * .28; g.lineWidth = .5 + r() * 2.2;
+      g.beginPath();
+      for (let x = 0; x <= w; x += 8) { const y = y0 + Math.sin(x * fr + ph) * amp; x ? g.lineTo(x, y) : g.moveTo(x, y); }
+      g.stroke();
+    }
+    g.globalAlpha = .5;
+    for (let k = 0; k < 4; k++) {
+      const x = r() * w, y = r() * h;
+      g.strokeStyle = dark; g.lineWidth = 1.5;
+      for (let q = 1; q < 4; q++) { g.beginPath(); g.ellipse(x, y, 5 * q, 2.4 * q, 0, 0, TAU); g.stroke(); }
+    }
+    g.globalAlpha = 1;
+  });
+}
+
+function fabricTexture({ base = '#e8d9b5', seed = 3, ribs = 0, size = 256, stain = .5, stitch = '#7a6844', tone = '#000' } = {}) {
+  return canvasTexture(size, size, (g, w, h) => {
+    const r = rng(seed);
+    g.fillStyle = base; g.fillRect(0, 0, w, h);
+    g.globalAlpha = .09; g.fillStyle = tone;
+    for (let i = 0; i < w; i += 3) g.fillRect(i, 0, 1, h);
+    for (let j = 0; j < h; j += 3) g.fillRect(0, j, w, 1);
+    g.globalAlpha = 1;
+    for (let i = 0; i < 36 * stain; i++) {
+      const x = r() * w, y = r() * h, rad = 10 + r() * 40, gr = g.createRadialGradient(x, y, 0, x, y, rad);
+      gr.addColorStop(0, `rgba(60,40,10,${.05 + r() * .09})`); gr.addColorStop(1, 'rgba(60,40,10,0)');
+      g.fillStyle = gr; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    }
+    g.strokeStyle = stitch; g.lineWidth = 1.6; g.setLineDash([5, 4]);
+    for (let i = 0; i < ribs; i++) { const y = ((i + .5) / ribs) * h; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+    g.setLineDash([]);
+  });
+}
+
+/**
+ * Lofted wing / blade / fin. One half-wing along +X starting at the root (x = 0).
+ * Leading edge towards +Z, trailing edge towards -Z, thickness along Y.
+ */
+function loftWing({ span = 4, chord0 = 1.4, chord1 = 1, thick = .12, sweep = 0, dihedral = 0, twist = 0, camber = .03, pts = 12, tipRound = true, uv = 1, zOffset = 0 } = {}) {
+  const ts = [0, .1, .2, .3, .4, .5, .6, .7, .8, .9];
+  if (tipRound) ts.push(.945, .975, .993, 1); else ts.push(1);
+  const ring = [];
+  for (let k = 0; k <= pts; k++) ring.push({ u: (1 - Math.cos(Math.PI * k / pts)) / 2, s: 1 });
+  for (let k = pts - 1; k >= 1; k--) ring.push({ u: (1 - Math.cos(Math.PI * k / pts)) / 2, s: -1 });
+  const n = ring.length, pos = [], uvs = [], idx = [];
+  for (const t of ts) {
+    let f = 1;
+    if (tipRound && t > .9) f = Math.max(.03, Math.sqrt(Math.max(0, 1 - Math.pow((t - .9) / .1, 2))));
+    const c = lerp(chord0, chord1, t) * f, x = span * t, zc = zOffset - sweep * t, a = twist * t, ca = Math.cos(a), sa = Math.sin(a);
+    for (const { u, s } of ring) {
+      const poly = .2969 * Math.sqrt(u) - .126 * u - .3516 * u * u + .2843 * u ** 3 - .1015 * u ** 4;
+      const yt = 5 * thick * c * poly, yc = camber * c * 4 * u * (1 - u);
+      const zr = c / 2 - u * c, yr = yc + s * yt;
+      pos.push(x, Math.tan(dihedral) * x + zr * sa + yr * ca, zc + zr * ca - yr * sa);
+      uvs.push(u * c * uv, x * uv);
+    }
+  }
+  for (let i = 0; i < ts.length - 1; i++) for (let k = 0; k < n; k++) {
+    const a = i * n + k, b = i * n + (k + 1) % n, c = (i + 1) * n + k, d = (i + 1) * n + (k + 1) % n;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  return g;
+}
+/** Right half-wing + mirrored left half-wing sharing one geometry. */
+function wingPair(geo, mat) {
+  const g = group('wings');
+  const r = new THREE.Mesh(geo, mat), l = new THREE.Mesh(geo, mat); l.scale.x = -1;
+  g.add(r, l); return g;
+}
+
+/** Extrude a side-profile polygon [[z, y], ...] into a slab of thickness t centred on x = 0. */
+function slabYZ(points, t, mat, { bevel = .02 } = {}) {
+  const s = new THREE.Shape(); points.forEach(([z, y], i) => i ? s.lineTo(z, y) : s.moveTo(z, y));
+  const g = new THREE.ExtrudeGeometry(s, { depth: t, bevelEnabled: bevel > 0, bevelSize: bevel, bevelThickness: bevel, bevelSegments: 1 });
+  g.translate(0, 0, -t / 2); g.rotateY(-Math.PI / 2);
+  return new THREE.Mesh(g, mat);
+}
+/** Extrude a plan-view polygon [[x, z], ...] into a flat plate of thickness t (y up). */
+function slabXZ(points, t, mat, { bevel = .015 } = {}) {
+  const s = new THREE.Shape(); points.forEach(([x, z], i) => i ? s.lineTo(x, -z) : s.moveTo(x, -z));
+  const g = new THREE.ExtrudeGeometry(s, { depth: t, bevelEnabled: bevel > 0, bevelSize: bevel, bevelThickness: bevel, bevelSegments: 1 });
+  g.rotateX(-Math.PI / 2); g.translate(0, -t / 2, 0);
+  return new THREE.Mesh(g, mat);
+}
+
+/** Spinning propeller facing +Z. userData: { rotor, spin (rad/s), blur } */
+let _blurTex = null;
+function createPropeller({ blades = 2, radius = 1.3, chord = .28, hubR = .15, mat = M.brass, hubMat = M.brass, spinner = .45, thick = .12, pitch = .5, taper = .7, camber = .06, blurColor = '#d9b07a', spin = 30, uv = 2, sweep = 0, spinnerMat = null } = {}) {
+  const g = group('propeller'), rotor = add(g, group('rotor'));
+  const bg = loftWing({ span: radius - hubR * .5, chord0: chord, chord1: chord * taper, thick, twist: pitch, camber, uv, sweep });
+  bg.applyMatrix4(new THREE.Matrix4().set(0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1));
+  bg.translate(0, hubR * .5, 0);
+  for (let i = 0; i < blades; i++) { const b = new THREE.Mesh(bg, mat); b.rotation.z = (i / blades) * TAU; rotor.add(b); }
+  add(rotor, cylZ(hubR, hubR, .22, hubMat, 20));
+  add(rotor, torus(hubR * .9, hubR * .12, hubMat, 6, 20), 0, 0, .11);
+  if (spinner > 0) add(g, cone(hubR * 1.15, spinner, spinnerMat || hubMat, 24), 0, 0, .11 + spinner / 2, Math.PI / 2);
+  if (!_blurTex) _blurTex = canvasTexture(128, 128, (c, w, h) => {
+    const gr = c.createRadialGradient(64, 64, 8, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(255,255,255,0)'); gr.addColorStop(.25, 'rgba(255,255,255,.55)'); gr.addColorStop(.9, 'rgba(255,255,255,.7)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    c.fillStyle = gr; c.fillRect(0, 0, w, h);
+  }, { repeat: false });
+  const blur = add(g, new THREE.Mesh(new THREE.CircleGeometry(radius * 1.02, 40),
+    new THREE.MeshBasicMaterial({ map: _blurTex, color: blurColor, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide, fog: true })), 0, 0, .02);
+  blur.userData.noShadow = true;
+  g.userData = { rotor, spin, blur, radius };
+  return g;
+}
+
+/** Gun along +Z from the breech. userData.muzzles = [Object3D...] (for later bullet spawning). */
+function createGun({ barrels = 2, length = 1.5, r = .04, gap = .13, jacket = .6, mat = M.gunmetal, jmat = M.brassDark, magazine = true, layout = 'row', brake = true, belt = false } = {}) {
+  const g = group('gun'); const muzzles = [];
+  const rows = layout === 'ring' ? barrels : barrels;
+  add(g, box(Math.max(.01, gap * (barrels - 1)) + r * 6, r * 5.5, length * .3, M.ironDark), 0, 0, length * .05);
+  for (let i = 0; i < barrels; i++) {
+    let x = (i - (barrels - 1) / 2) * gap, y = 0;
+    if (layout === 'ring') { const a = (i / barrels) * TAU; x = Math.cos(a) * gap; y = Math.sin(a) * gap; }
+    add(g, cylZ(r, r, length, mat, 12), x, y, length / 2);
+    if (jacket > 0) {
+      add(g, cylZ(r * 1.75, r * 1.75, length * jacket, jmat, 14), x, y, length * jacket / 2 + length * .08);
+      for (let k = 1; k <= 3; k++) add(g, torus(r * 1.78, r * .22, M.brass, 5, 14), x, y, length * jacket * k / 3.4 + length * .08);
+    }
+    if (brake) add(g, cylZ(r * 1.45, r * 1.2, r * 3.2, M.ironDark, 12), x, y, length + r * 1.2);
+    const m = new THREE.Object3D(); m.position.set(x, y, length + r * 3); g.add(m); muzzles.push(m);
+  }
+  if (magazine) {
+    add(g, cyl(r * 3.2, r * 3.2, r * 2.4, M.brassDark, 18), 0, r * 4.3, length * .1);
+    add(g, torus(r * 3.2, r * .4, M.brass, 5, 18), 0, r * 5.5, length * .1, Math.PI / 2);
+  }
+  if (belt) add(g, box(r * 1.2, r * 6, r * 2, M.brass), 0, -r * 3.4, length * .08);
+  g.userData = { muzzles };
+  return g;
+}
+
+/** Spoked wheel; axis along X. */
+function createWheel(R = .42, r = .1, { tyre = M.rubber, hub = M.brass, spokes = 10 } = {}) {
+  const g = group('wheel');
+  add(g, torus(R, r, tyre, 10, 28), 0, 0, 0, 0, Math.PI / 2, 0);
+  add(g, torus(R - r * .9, r * .22, M.steel, 6, 28), 0, 0, 0, 0, Math.PI / 2, 0);
+  add(g, cylX(R * .2, R * .2, r * 1.6, hub, 16));
+  for (let i = 0; i < spokes; i++) {
+    const a = (i / spokes) * TAU;
+    g.add(strut(V3(0, Math.cos(a) * R * .2, Math.sin(a) * R * .2), V3(0, Math.cos(a) * (R - r * .8), Math.sin(a) * (R - r * .8)), .008, M.steel, 5));
+  }
+  return g;
+}
+
+/* ---------- humanoid rig (A-pose) ---------- */
+const capsule = (r, len, mat, seg = 10) => new THREE.Mesh(new THREE.CapsuleGeometry(r, Math.max(.001, len - 2 * r), 4, seg), mat);
+
+/**
+ * Procedural humanoid, feet at y = 0, facing +Z, A-pose.
+ * s: { H, leg, torso, head, arm, sh, chestD, limb, headShape:{rx,ry,rz}, skin, shirt, forearm, pants, boots, gloves, hair }
+ */
+function createHumanoid(s) {
+  const mats = {
+    skin: matte(s.skin, .55), shirt: s.shirtMat ?? matte(s.shirt, s.shirtRough ?? .78), forearm: s.forearmMat ?? matte(s.forearm ?? s.shirt, .75),
+    pants: matte(s.pants, .85), boots: matte(s.boots, .68), gloves: matte(s.gloves, .62),
+    eyeW: matte('#efe9da', .3), pupil: matte('#120d0a', .25), hair: matte(s.hair ?? '#3a2616', .8), dark: matte('#1c1210', .5),
+  };
+  const H = s.H, root = group('humanoid');
+  const legLen = H * s.leg, torsoLen = H * s.torso, headH = H * s.head, neckLen = headH * .2, armLen = H * s.arm;
+  const sh = H * s.sh, cD = H * s.chestD, rA = H * s.limb;
+  const thighLen = legLen * .52, shinLen = legLen * .43, footH = legLen * .05;
+  const rT = rA * 1.45, rS = rA * 1.05;
+
+  const hips = add(root, group('hips'), 0, legLen, 0);
+  const pelvis = add(hips, sphere(1, mats.pants, 20, 14)); pelvis.scale.set(sh * .78, torsoLen * .1, cD * .95);
+
+  const legs = [];
+  for (const side of [-1, 1]) {
+    const hip = add(hips, group('hip'), side * sh * .42, 0, 0); hip.rotation.z = side * .1;
+    add(hip, capsule(rT, thighLen + rT, mats.pants, 12), 0, -thighLen / 2, 0);
+    const knee = add(hip, group('knee'), 0, -thighLen, 0);
+    add(knee, capsule(rS, shinLen + rS, mats.pants, 12), 0, -shinLen / 2, 0);
+    add(knee, cyl(rS * 1.2, rS * 1.12, shinLen * .6, mats.boots, 16), 0, -shinLen * .68, 0);
+    add(knee, torus(rS * 1.2, rS * .14, mats.boots, 6, 16), 0, -shinLen * .38, 0, Math.PI / 2);
+    const foot = add(knee, box(rS * 2.2, footH * 2.2, rS * 4.6, mats.boots), 0, -shinLen - footH * .4, rS * 1.1);
+    foot.rotation.z = -hip.rotation.z;
+    legs.push({ hip, knee, foot });
+  }
+
+  const spine = add(hips, group('spine'), 0, torsoLen * .02, 0);
+  const belly = add(spine, sphere(1, mats.shirt, 24, 16), 0, torsoLen * .2, 0); belly.scale.set(sh * .82, torsoLen * .24, cD * .88);
+  const mid = add(spine, sphere(1, mats.shirt, 24, 16), 0, torsoLen * .4, 0); mid.scale.set(sh * .92, torsoLen * .24, cD * .96);
+  const chest = add(spine, sphere(1, mats.shirt, 28, 18), 0, torsoLen * .62, 0); chest.scale.set(sh * 1.05, torsoLen * .34, cD * 1.06);
+  const traps = add(spine, sphere(1, mats.shirt, 20, 12), 0, torsoLen * .9, 0); traps.scale.set(sh * .6, torsoLen * .09, cD * .7);
+  add(spine, cyl(headH * .13, headH * .15, neckLen + headH * .1, mats.skin, 14), 0, torsoLen + neckLen * .4, 0);
+
+  const upperLen = armLen * .48, foreLen = armLen * .44, handLen = armLen * .14;
+  const arms = [];
+  for (const side of [-1, 1]) {
+    const shoulder = add(spine, group('shoulder'), side * sh * 1.02, torsoLen * .88, 0); shoulder.rotation.z = side * .62;
+    add(shoulder, sphere(rA * 1.32, mats.shirt, 16, 12));
+    add(shoulder, capsule(rA, upperLen + rA, mats.shirt, 12), 0, -upperLen / 2, 0);
+    const elbow = add(shoulder, group('elbow'), 0, -upperLen, 0); elbow.rotation.x = -.2;
+    add(elbow, capsule(rA * .9, foreLen + rA, mats.forearm, 12), 0, -foreLen / 2, 0);
+    const wrist = add(elbow, group('wrist'), 0, -foreLen, 0);
+    add(wrist, cyl(rA * 1.0, rA * 1.05, handLen * .3, mats.gloves, 12), 0, 0, 0);
+    const hand = add(wrist, sphere(1, mats.gloves, 14, 10), 0, -handLen * .5, 0); hand.scale.set(rA * 1.08, handLen * .55, rA * .78);
+    const thumb = add(wrist, capsule(rA * .3, handLen * .55, mats.gloves, 6), -side * rA * .55, -handLen * .35, rA * .62); thumb.rotation.set(.4, 0, side * .5);
+    arms.push({ shoulder, elbow, wrist, hand });
+  }
+
+  // head
+  const hs = s.headShape || { rx: .4, ry: .5, rz: .44 };
+  const rx = headH * hs.rx, ry = headH * hs.ry, rz = headH * hs.rz;
+  const hp = add(spine, group('head'), 0, torsoLen + neckLen, 0);
+  const cy = ry * .96;                                      // head-centre height inside the head pivot
+  const skull = add(hp, sphere(1, mats.skin, 36, 24), 0, cy, 0); skull.scale.set(rx, ry, rz);
+  const head = { hp, rx, ry, rz, cy, headH, skull };
+
+  const rig = {
+    root, hips, spine, mats, head, legs, arms, dims: { H, legLen, torsoLen, headH, neckLen, armLen, sh, cD, rA, upperLen, foreLen, handLen, rT, rS },
+    spec: s, idle: null, extras: {},
+  };
+  rig.idle = (t, k = 0) => {
+    const b = Math.sin(t * 1.7 + k);
+    spine.scale.set(1 + b * .004, 1 + b * .008, 1 + b * .004);
+    hp.rotation.y = Math.sin(t * .45 + k) * .06; hp.rotation.x = Math.sin(t * .6 + k * 2) * .025;
+    arms.forEach((a, i) => { a.shoulder.rotation.z = (i ? 1 : -1) * (.62 + b * .012); a.elbow.rotation.x = -.2 + Math.sin(t * 1.2 + k + i) * .02; });
+  };
+  return rig;
+}
+
+/** Eyes, brows, nose, mouth, ears. Returns the created parts so races can alter them. */
+function buildFace(rig, o = {}) {
+  const { hp, rx, ry, rz, cy } = rig.head, m = rig.mats, p = {};
+  const eyeR = o.eyeR ?? ry * .12, browMat = o.browMat ?? m.hair;
+  p.eyes = [];
+  for (const s of [-1, 1]) {
+    const ex = s * rx * (o.eyeX ?? .42), ey = cy + ry * (o.eyeY ?? .1), ez = rz * (o.eyeZ ?? .85);
+    const e = add(hp, sphere(eyeR, m.eyeW, 14, 10), ex, ey, ez); e.scale.set(1, o.eyeSquash ?? 1, .7);
+    add(hp, sphere(eyeR * .58, o.pupilMat ?? m.pupil, 12, 8), ex, ey, ez + eyeR * .38);
+    const brow = add(hp, box(rx * (o.browW ?? .5), ry * (o.browH ?? .07), ry * .1, browMat), s * rx * .4, ey + ry * (o.browY ?? .26), rz * .84 + (o.browZ ?? 0));
+    brow.rotation.z = -s * (o.browTilt ?? .16); brow.rotation.x = -.1;
+    p.eyes.push(e);
+  }
+  p.nose = add(hp, sphere(ry * (o.noseR ?? .1), m.skin, 14, 10), 0, cy - ry * .1, rz * (o.noseZ ?? .96));
+  p.nose.scale.set(o.noseW ?? .85, o.noseH ?? 1.2, o.noseD ?? 1.15);
+  p.mouth = add(hp, box(rx * (o.mouthW ?? .5), ry * .04, ry * .06, o.mouthMat ?? m.dark), 0, cy - ry * (o.mouthY ?? .46), rz * .86);
+  p.ears = [];
+  if (!o.noEars) for (const s of [-1, 1]) {
+    const ear = add(hp, sphere(ry * (o.earR ?? .15), m.skin, 10, 8), s * rx * .99, cy - ry * .02, -rz * .06); ear.scale.set(.4, 1.05, .75); p.ears.push(ear);
+  }
+  return p;
+}
+
+/** Leather cap / helmet shell with ear flaps. */
+function addCap(rig, { mat, trim = M.brass, coverage = .52, tilt = .45, pad = 1.09, flaps = true, flapMat = null, rivetsOn = true } = {}) {
+  const { hp, rx, ry, rz, cy } = rig.head;
+  mat.side = THREE.DoubleSide;
+  const cap = add(hp, new THREE.Mesh(new THREE.SphereGeometry(1, 34, 20, 0, TAU, 0, Math.PI * coverage), mat), 0, cy, -rz * .03);
+  cap.scale.set(rx * pad, ry * pad, rz * pad); cap.rotation.x = -tilt;
+  const th = Math.PI * coverage;
+  const rim = add(cap, torus(Math.sin(th), .035, trim, 6, 40), 0, Math.cos(th), 0, Math.PI / 2);
+  const parts = { cap, rim };
+  if (rivetsOn) {
+    const pts = []; for (let i = 0; i < 14; i++) { const a = (i / 14) * TAU, tt = th * .86; pts.push(V3(Math.cos(a) * Math.sin(tt), Math.cos(tt), Math.sin(a) * Math.sin(tt)).multiplyScalar(1.005)); }
+    cap.add(rivets(pts, .028, trim));
+  }
+  add(cap, cyl(.1, .12, .06, trim, 12), 0, 1.0, 0);
+  if (flaps) for (const s of [-1, 1]) {
+    const f = add(hp, box(rx * .2, ry * .5, rz * .42, flapMat ?? mat), s * rx * 1.02, cy - ry * .12, rz * .02); f.rotation.z = s * .12;
+  }
+  return parts;
+}
+
+/** Goggles with a pivot at eye level so they can be flipped up onto the forehead. */
+const _lensAmber = new THREE.MeshStandardMaterial({ color: '#d8a040', roughness: .08, metalness: .2, transparent: true, opacity: .78, emissive: '#6a3a08', emissiveIntensity: .35 });
+function addGoggles(rig, { frame = M.brass, lens = _lensAmber, size = 1, strap = M.leatherDark, up = false, big = 1 } = {}) {
+  const { hp, rx, ry, rz, cy } = rig.head;
+  const eyeY = cy + ry * .1, gg = add(hp, group('goggles'), 0, eyeY, 0), lr = ry * .17 * size * big;
+  for (const s of [-1, 1]) {
+    const x = s * rx * .42;
+    add(gg, cylZ(lr * 1.1, lr * 1.1, ry * .12, frame, 20), x, 0, rz * .9);
+    add(gg, cylZ(lr * .88, lr * .88, ry * .15, lens, 20), x, 0, rz * .9 + ry * .02);
+    add(gg, torus(lr * 1.05, lr * .17, frame, 8, 22), x, 0, rz * .9 + ry * .075);
+  }
+  add(gg, box(rx * .32, ry * .07, ry * .07, frame), 0, 0, rz * .93);
+  const st = add(gg, torus(1, ry * .045, strap, 6, 32), 0, 0, 0, Math.PI / 2); st.scale.set(rx * 1.04, rz * 1.02, 1);
+  gg.setUp = (u) => { gg.position.set(0, eyeY + (u ? ry * .56 : 0), u ? rz * .16 : 0); gg.rotation.x = u ? -.62 : 0; };
+  gg.setUp(up);
+  rig.goggles = gg;
+  return gg;
+}
+
+function addBelt(rig, { mat = M.leatherDark, buckle = M.brass, y = .1, w = 1.0 } = {}) {
+  const { torsoLen, sh, cD, H } = rig.dims, { spine } = rig;
+  const b = add(spine, torus(1, H * .014 * w, mat, 6, 36), 0, torsoLen * y, 0, Math.PI / 2); b.scale.set(sh * .86, cD * .92, 1);
+  add(spine, box(H * .035, H * .03, H * .012, buckle), 0, torsoLen * y, cD * .93);
+}
+function addScarf(rig, { mat, tail = true, thick = 1 } = {}) {
+  const { torsoLen, neckLen, headH, sh, cD, H } = rig.dims, { spine } = rig;
+  const sc = add(spine, torus(1, headH * .09 * thick, mat, 8, 24), 0, torsoLen + neckLen * .25, 0, Math.PI / 2); sc.scale.set(headH * .3, headH * .28, 1);
+  if (tail) { const t = add(spine, box(headH * .22, torsoLen * .46, H * .01, mat), -sh * .16, torsoLen * .6, -cD * 1.05); t.rotation.z = .08; t.rotation.x = -.1; }
+}
+/** Diagonal bandolier with brass cartridges. */
+function addBandolier(rig, { mat = M.leatherDark, side = 1, rounds = 9 } = {}) {
+  const { torsoLen, sh, cD, H } = rig.dims, { spine } = rig;
+  const g = add(spine, group('bandolier'), 0, torsoLen * .5, 0); g.rotation.z = side * .68;
+  const band = add(g, box(H * .028, torsoLen * .95, H * .012, mat), 0, 0, cD * 1.08);
+  for (let i = 0; i < rounds; i++) {
+    const y = (i / (rounds - 1) - .5) * torsoLen * .78;
+    add(g, cyl(H * .0072, H * .0072, H * .03, M.brassPolished, 8), side * H * .0, y, cD * 1.13);
+    add(g, cone(H * .0068, H * .012, M.copper, 8), 0, y + H * .021, cD * 1.13);
+  }
+  return g;
+}
+function addShoulderPad(rig, side, { mat = M.leatherTan, rim = M.brass, size = 1 } = {}) {
+  const arm = rig.arms[side > 0 ? 1 : 0], { rA } = rig.dims;
+  const pad = add(arm.shoulder, new THREE.Mesh(new THREE.SphereGeometry(rA * 1.9 * size, 18, 10, 0, TAU, 0, Math.PI * .5), mat), 0, rA * .2, 0);
+  pad.scale.set(1.05, .75, 1.05); pad.rotation.z = 0;
+  add(arm.shoulder, torus(rA * 1.9 * size, rA * .2, rim, 6, 24), 0, rA * .2, 0, Math.PI / 2);
+  return pad;
+}
+
+/* @@STAGE_EXTRA_HELPERS@@ */
+/* ====================================================================
+ *  STAGE 2 — HUMANS
+ *  Brass biplane with a boiler nose, belly ball-turret, flight crew.
+ * ==================================================================== */
+
+/** Add a steam/smoke emitter anchor to an aircraft's userData registry (animated in stage 7). */
+function addEmitter(ac, parent, x, y, z, kind = 'steam', opts = {}) {
+  const a = new THREE.Object3D(); a.position.set(x, y, z); parent.add(a);
+  ac.userData.emitters.push({ anchor: a, kind, ...opts });
+  return a;
+}
+function newAircraftData(race, name) {
+  return { race, name, props: [], emitters: [], gauges: [], flutter: [], seats: {}, muzzles: { forward: [], turret: [] }, spinners: [] };
+}
+function lerpProfile(prof, z) {            // prof: [[r, z]...] ascending z
+  for (let i = 0; i < prof.length - 1; i++) {
+    const [r0, z0] = prof[i], [r1, z1] = prof[i + 1];
+    if (z >= z0 && z <= z1) return lerp(r0, r1, (z - z0) / (z1 - z0));
+  }
+  return prof[prof.length - 1][0];
+}
+
+function createHumanAircraft() {
+  const ac = group('aircraft-human');
+  const ud = ac.userData = newAircraftData('human', 'Brass Kestrel');
+
+  // --- materials
+  const fabric = new THREE.MeshStandardMaterial({ map: fabricTexture({ base: '#ecdcb4', seed: 4, ribs: 3 }), roughness: .85 });
+  const fabricRed = new THREE.MeshStandardMaterial({ map: fabricTexture({ base: '#a23a2a', seed: 6, ribs: 2, stitch: '#d8b080' }), roughness: .85 });
+  const wood = new THREE.MeshStandardMaterial({ map: woodTexture({}), roughness: .55 });
+  const plates = plateTexture({ color: '#2a4d73', cols: 5, rows: 4, seed: 12, rivetSize: 2.6, grime: .35 });
+  const paint = new THREE.MeshStandardMaterial({ map: plates.map, bumpMap: plates.bump, bumpScale: 1.6, metalness: .45, roughness: .42 });
+  const bp = plateTexture({ color: '#c0733f', cols: 8, rows: 3, seed: 7, rivetSize: 2.4, grime: .3 });
+  const boilerMat = new THREE.MeshStandardMaterial({ map: bp.map, bumpMap: bp.bump, bumpScale: 1.4, metalness: .85, roughness: .36 });
+  const wire = metal('#22262b', .5, .6);
+
+  // --- fuselage (painted riveted plates), tail to nose
+  const prof = [[.05, -3.5], [.09, -3.2], [.2, -2.5], [.31, -1.7], [.42, -.9], [.5, -.2], [.56, .35], [.58, .55]];
+  const fg = new THREE.LatheGeometry(prof.map(([r, z]) => new THREE.Vector2(r, z)), 36); fg.rotateX(Math.PI / 2);
+  scaleUV(fg, 2.4, 4.2);
+  const fus = add(ac, new THREE.Mesh(fg, paint)); fus.scale.x = .9;
+  for (const z of [-2.1, -1.4, -.7, 0]) ac.add(Object.assign(rivets(ringPoints(lerpProfile(prof, z) + .006, z, 30, .9, 1), .017, M.brassPolished)));
+  add(ac, torus(.6, .06, M.brassDark, 8, 32), 0, 0, .36);
+
+  // --- boiler nose
+  add(ac, cylZ(.62, .62, 2.0, boilerMat, 40), 0, 0, 1.35);
+  const dome = add(ac, sphere(.62, M.copper, 32, 16), 0, 0, 2.35); dome.scale.z = .38;
+  for (const z of [.5, 1.0, 1.72, 2.26]) {
+    add(ac, torus(.635, .045, M.brass, 8, 40), 0, 0, z);
+    ac.add(rivets(ringPoints(.645, z + .09, 32), .02, M.brassPolished));
+  }
+  // chimney + flared cap
+  add(ac, cyl(.11, .125, .95, M.copperDark, 20), 0, 1.02, 1.12);
+  add(ac, cyl(.19, .12, .15, M.brass, 20), 0, 1.54, 1.12);
+  add(ac, torus(.14, .03, M.brass, 6, 20), 0, .75, 1.12, Math.PI / 2);
+  addEmitter(ac, ac, 0, 1.66, 1.12, 'smoke', { rate: 16, size: 1.0, life: 2.4, speed: .9 });
+  // safety valve + steam dome
+  add(ac, cyl(.07, .09, .18, M.brass, 14), 0, .72, .62);
+  add(ac, sphere(.08, M.brassPolished, 12, 10), 0, .84, .62);
+  add(ac, box(.34, .03, .04, M.brassDark), .1, .9, .62, 0, 0, .12);
+  addEmitter(ac, ac, 0, .92, .62, 'steam', { rate: 10, size: .5, life: 1.3, speed: 1.4, intermittent: true });
+  const sd = add(ac, sphere(.22, M.brass, 20, 12), 0, .64, 1.78); sd.scale.y = .75;
+  add(ac, torus(.2, .03, M.brassDark, 6, 18), 0, .64, 1.78, Math.PI / 2);
+  // gauges on the boiler flanks
+  for (const s of [-1, 1]) {
+    const gg = add(ac, createGauge(.16), s * .6, .22, .95, 0, s * Math.PI / 2, 0); ud.gauges.push(gg);
+    const gg2 = add(ac, createGauge(.11), s * .5, .38, 1.9, 0, s * Math.PI / 2 * .8, 0); ud.gauges.push(gg2);
+    add(ac, createValveWheel(.1), s * .58, -.18, 1.45, 0, s * Math.PI / 2, 0);
+  }
+  // side exhaust pipes
+  for (const s of [-1, 1]) {
+    const c = new THREE.CatmullRomCurve3([V3(s * .56, -.1, .85), V3(s * .8, -.2, .6), V3(s * .86, -.42, .1), V3(s * .8, -.55, -.35)]);
+    add(ac, new THREE.Mesh(new THREE.TubeGeometry(c, 24, .055, 10), M.brass));
+    for (const t of [.05, .5]) { const p = c.getPointAt(t); add(ac, torus(.075, .02, M.brassDark, 6, 14), p.x, p.y, p.z); }
+    add(ac, cyl(.085, .06, .12, M.ironDark, 12), s * .8, -.57, -.38, .5, 0, 0);
+    addEmitter(ac, ac, s * .8, -.62, -.42, 'steam', { rate: 7, size: .45, life: 1.4, speed: .9, dir: V3(0, -.2, -1) });
+  }
+  // feed pipe along the fuselage
+  for (const s of [-1, 1]) {
+    const c = new THREE.CatmullRomCurve3([V3(s * .52, .2, .4), V3(s * .56, .12, -.2), V3(s * .46, .08, -.9)]);
+    add(ac, new THREE.Mesh(new THREE.TubeGeometry(c, 16, .03, 8), M.copper));
+  }
+
+  // --- cockpit (pilot)
+  const cz = -.95, ctop = lerpProfile(prof, cz);
+  const hole = add(ac, new THREE.Mesh(new THREE.CircleGeometry(1, 28), M.leatherDark), 0, ctop + .005, cz, -Math.PI / 2, 0, 0); hole.scale.set(.31, .55, 1); hole.userData.noShadow = true;
+  const coam = add(ac, torus(1, .05, M.leather, 8, 36), 0, ctop + .01, cz, Math.PI / 2); coam.scale.set(.32, .56, 1);
+  add(ac, box(.5, .24, .06, M.leather), 0, ctop + .18, cz - .62, -.25, 0, 0);          // padded headrest
+  add(ac, box(.44, .1, .4, M.leatherTan), 0, ctop - .06, cz + .02);                    // seat cushion
+  add(ac, box(.44, .42, .09, M.leatherTan), 0, ctop + .1, cz - .28, -.25, 0, 0);       // backrest
+  add(ac, cyl(.018, .018, .38, M.brass, 8), 0, ctop + .12, cz + .38, .25, 0, 0);       // control stick
+  add(ac, sphere(.045, M.leatherDark, 10, 8), 0, ctop + .3, cz + .42);
+  const dash = add(ac, box(.56, .26, .07, M.leatherDark), 0, ctop + .22, cz + .62, -.5, 0, 0);
+  for (const s of [-1, 1]) ud.gauges.push(add(ac, createGauge(.085), s * .13, ctop + .3, cz + .6 - .01, -.5, Math.PI, 0));
+  // windscreen
+  add(ac, box(.62, .32, .012, M.glass), 0, ctop + .42, cz + .78, -.35, 0, 0).userData.noShadow = true;
+  for (const x of [-.31, 0, .31]) add(ac, cyl(.012, .012, .34, M.brass, 6), x, ctop + .42, cz + .78, -.35, 0, 0);
+  add(ac, box(.64, .02, .02, M.brass), 0, ctop + .58, cz + .72, -.35, 0, 0);
+  const seatP = add(ac, new THREE.Object3D(), 0, ctop - .02, cz); ud.seats.pilot = seatP;
+
+  // --- wings
+  const wUp = wingPair(loftWing({ span: 4.5, chord0: 1.75, chord1: 1.5, thick: .085, camber: .05, sweep: .05, uv: .8, dihedral: .0 }), fabric);
+  wUp.position.set(0, 1.5, .12); ac.add(wUp);
+  const wLo = wingPair(loftWing({ span: 4.05, chord0: 1.6, chord1: 1.35, thick: .09, camber: .045, sweep: .04, uv: .8, dihedral: .035 }), fabric);
+  wLo.position.set(0, -.58, -.04); ac.add(wLo);
+  // red tips (painted wingtip panels)
+  for (const s of [-1, 1]) {
+    add(ac, box(.06, .14, 1.3, fabricRed), s * 4.5, 1.5, .08 - .05);
+    add(ac, box(.06, .14, 1.1, fabricRed), s * 4.05, -.58 + Math.tan(.035) * 4.05, -.1);
+    // brass leading-edge caps
+  }
+  // interplane struts, brass fittings, wires
+  const lowY = (x) => -.58 + Math.tan(.035) * x - .02 + .045, upY = 1.5 - .06;
+  const struts = [2.0, 3.7];
+  for (const s of [-1, 1]) for (const x of struts) for (const [zl, zu] of [[.52, .6], [-.42, -.34]]) {
+    const a = V3(s * x, lowY(x), zl), b = V3(s * x, upY, zu);
+    ac.add(strut(a, b, .042, wood, 8));
+    add(ac, cyl(.07, .07, .07, M.brass, 10), a.x, a.y, a.z); add(ac, cyl(.07, .07, .07, M.brass, 10), b.x, b.y, b.z);
+  }
+  for (const s of [-1, 1]) for (const z of [.52, -.42]) {
+    const zu = z + .08;
+    ac.add(strut(V3(s * 2.0, lowY(2.0), z), V3(s * 3.7, upY, zu), .009, wire, 4));
+    ac.add(strut(V3(s * 3.7, lowY(3.7), z), V3(s * 2.0, upY, zu), .009, wire, 4));
+    ac.add(strut(V3(s * .5, -.3, z * .4), V3(s * 2.0, upY, zu), .009, wire, 4));
+    ac.add(strut(V3(s * 4.3, 1.45, z + .1), V3(s * 3.7, lowY(3.7), z), .009, wire, 4));
+  }
+  // cabane struts
+  for (const s of [-1, 1]) for (const z of [.18, -.62]) {
+    ac.add(strut(V3(s * .3, lerpProfile(prof, z) * .9 - .08, z), V3(s * .62, 1.45, z + .02), .04, wood, 8));
+  }
+
+  // --- tail
+  const stab = wingPair(loftWing({ span: 1.75, chord0: .95, chord1: .62, thick: .06, camber: .01, uv: .8 }), fabric);
+  stab.position.set(0, .02, -3.05); ac.add(stab);
+  add(ac, slabYZ([[-2.55, .1], [-3.05, .98], [-3.32, 1.03], [-3.32, .08]], .07, paint));
+  add(ac, slabYZ([[-3.32, 1.03], [-3.66, .88], [-3.66, .0], [-3.32, .08]], .06, fabricRed));
+  add(ac, strut(V3(0, .0, -3.5), V3(0, -.42, -3.62), .025, M.steel, 6));
+  add(ac, sphere(.07, M.rubber, 10, 8), 0, -.46, -3.64);
+  for (const s of [-1, 1]) ac.add(strut(V3(s * .95, -.01, -3.2), V3(0, .5, -3.28), .008, wire, 4));
+
+  // --- landing gear
+  for (const s of [-1, 1]) {
+    const axle = V3(s * 1.05, -1.38, 1.15);
+    ac.add(strut(V3(s * .38, -.4, 1.35), axle, .035, M.steel, 8));
+    ac.add(strut(V3(s * .38, -.35, .7), axle, .035, M.steel, 8));
+    ac.add(strut(V3(s * .5, -.9, 1.1), V3(s * 1.0, -1.1, 1.15), .02, wire, 4));
+    add(ac, createWheel(.42, .1), s * 1.12, -1.38, 1.15);
+  }
+  add(ac, cylX(.03, .03, 2.2, M.steel, 8), 0, -1.38, 1.15);
+
+  // --- propeller (wood blades, brass spinner)
+  const prop = add(ac, createPropeller({ blades: 2, radius: 1.4, chord: .3, hubR: .15, mat: wood, hubMat: M.brass, spinner: .5, spin: 26, uv: 1.4 }), 0, 0, 2.62);
+  ud.props.push(prop);
+
+  // --- forward-fixed guns (pilot): twin synchronized machine guns above the boiler
+  for (const s of [-1, 1]) {
+    const gun = add(ac, createGun({ barrels: 1, length: 1.0, r: .036, jacket: .65, magazine: true }), s * .3, .74, 1.5);
+    ud.muzzles.forward.push(...gun.userData.muzzles);
+    add(ac, cyl(.05, .05, .18, M.brassDark, 10), s * .3, .66, 1.58);
+  }
+
+  // --- belly ball turret (gunner)
+  const tz = -1.78, ty = -.88;
+  add(ac, torus(.32, .06, M.brass, 8, 24), 0, -.33, tz, Math.PI / 2);
+  add(ac, cyl(.2, .26, .35, M.brassDark, 18), 0, -.43, tz);
+  const ball = add(ac, group('turret'), 0, ty, tz); ud.turret = ball;
+  add(ball, sphere(.52, M.glass, 28, 18)).userData.noShadow = true;
+  for (const [rx, ry] of [[0, 0], [Math.PI / 2, 0], [0, Math.PI / 2]]) add(ball, torus(.525, .018, M.brass, 6, 40), 0, 0, 0, rx, ry, 0);
+  add(ball, torus(.525, .035, M.brassDark, 6, 40), 0, -.12, 0, Math.PI / 2).scale.set(.97, .97, 1);
+  add(ball, box(.34, .09, .34, M.leatherTan), 0, -.2, .03);                              // gunner seat
+  add(ball, box(.34, .3, .07, M.leatherTan), 0, 0, .22, 0, 0, 0);
+  add(ball, cyl(.012, .012, .3, M.brass, 6), .18, -.05, -.18, .3, 0, 0);
+  ud.seats.gunner = add(ball, new THREE.Object3D(), 0, -.12, .02);
+  const tg = createGun({ barrels: 2, length: 1.25, r: .042, gap: .15, jacket: .7, magazine: true, belt: true });
+  const dir = V3(.32, -.3, -.9).normalize();
+  tg.position.set(dir.x * .5, dir.y * .5 + .02, dir.z * .5); tg.quaternion.setFromUnitVectors(V3(0, 0, 1), dir); ball.add(tg);
+  const mnt = add(ball, cylZ(.14, .16, .16, M.brass, 16), dir.x * .5, dir.y * .5 + .02, dir.z * .5); mnt.quaternion.copy(tg.quaternion);
+  ud.muzzles.turret.push(...tg.userData.muzzles);
+
+  finalize(ac);
+  // a few dark metal pieces should not cast hard shadows from thin wires; keep default.
+  return ac;
+}
+
+/* ---------- human crew ---------- */
+function buildHumanCrew(role) {
+  const pilot = role === 'pilot';
+  const rig = createHumanoid({
+    H: pilot ? 1.78 : 1.86, leg: .47, torso: .3, head: .155, arm: .4, sh: pilot ? .122 : .136, chestD: pilot ? .072 : .082, limb: pilot ? .025 : .029,
+    headShape: { rx: .4, ry: .5, rz: .44 },
+    skin: pilot ? '#e6b894' : '#d8a47c', shirt: pilot ? '#6b4226' : '#43553a', forearm: pilot ? '#6b4226' : '#43553a',
+    pants: pilot ? '#6f6244' : '#3b3a30', boots: '#2b1b11', gloves: pilot ? '#2e1c10' : '#201812', hair: pilot ? '#4a3020' : '#8a8a86', shirtRough: .7,
+  });
+  const { H, torsoLen, sh, cD, headH, neckLen, rA } = rig.dims, { hp, rx, ry, rz, cy } = rig.head;
+  const f = buildFace(rig, { browMat: rig.mats.hair, noseR: pilot ? .1 : .115, mouthW: .46 });
+
+  if (pilot) {
+    // clean-shaven, leather flight cap, goggles, scarf, bomber jacket with fur collar
+    addCap(rig, { mat: matte('#5a3a22', .6), trim: M.brass, coverage: .53, tilt: .42 });
+    addGoggles(rig, { up: false, big: 1.45 });
+    addScarf(rig, { mat: matte('#b13a28', .8) });
+    const col = add(rig.spine, torus(1, headH * .1, matte('#d8cdb2', 1), 8, 24), 0, torsoLen * .93, 0, Math.PI / 2); col.scale.set(headH * .55, headH * .5, 1);
+    addBelt(rig, { mat: M.leatherDark });
+    for (let i = 0; i < 4; i++) add(rig.spine, sphere(H * .0075, M.brass, 8, 6), 0, torsoLen * (.3 + i * .12), cD * 1.0 + (i > 1 ? .02 : .004));
+    // chest pocket + wrist altimeter + holster
+    add(rig.spine, box(H * .06, H * .05, H * .008, M.leatherDark), sh * .45, torsoLen * .62, cD * 1.03);
+    const alt = add(rig.arms[0].elbow, createGauge(rA * 1.5, { bezel: M.brassPolished }), 0, -rig.dims.foreLen * .55, rA * .95, 0, 0, 0);
+    // satchel / parachute pack
+    const pk = add(rig.spine, box(H * .13, torsoLen * .62, H * .06, M.leatherTan), 0, torsoLen * .5, -cD * 1.15);
+    for (const s of [-1, 1]) { add(rig.spine, box(H * .02, torsoLen * .8, H * .012, M.leatherDark), s * sh * .45, torsoLen * .52, cD * 1.05); }
+    add(rig.spine, box(H * .02, H * .02, H * .012, M.brass), 0, torsoLen * .55, -cD * 1.2 - H * .03);
+    // short brown hair showing at the nape
+    const nape = add(hp, sphere(1, rig.mats.hair, 14, 10), 0, cy - ry * .25, -rz * .5); nape.scale.set(rx * .9, ry * .45, rz * .6);
+  } else {
+    // heavy gunner: riveted helmet, goggles pushed up, handlebar moustache, armour straps, steam pack
+    addCap(rig, { mat: M.gunmetal.clone(), trim: M.brass, coverage: .5, tilt: .5, pad: 1.1, flaps: false });
+    for (const s of [-1, 1]) {                                          // ear cups
+      add(hp, cylX(ry * .24, ry * .24, ry * .16, M.brassDark, 18), s * rx * 1.06, cy - ry * .04, -rz * .04);
+      add(hp, cylX(ry * .15, ry * .15, ry * .2, M.leatherDark, 14), s * rx * 1.1, cy - ry * .04, -rz * .04);
+    }
+    add(hp, box(rx * .1, ry * .55, rz * 1.9, M.brassDark), 0, cy + ry * 1.04, -rz * .02).rotation.x = 0;   // crest
+    addGoggles(rig, { up: true, frame: M.brassDark, lens: new THREE.MeshStandardMaterial({ color: '#7fb0c0', roughness: .08, metalness: .2, transparent: true, opacity: .8 }), big: 1.1 });
+    const mus = matte('#6a6a66', .9);
+    for (const s of [-1, 1]) {
+      const m1 = add(hp, capsule(ry * .045, rx * .5, mus, 6), s * rx * .26, cy - ry * .3, rz * .93); m1.rotation.z = Math.PI / 2 + s * .25;
+      const m2 = add(hp, capsule(ry * .035, rx * .26, mus, 6), s * rx * .55, cy - ry * .25, rz * .9); m2.rotation.z = s * .9;
+    }
+    const stub = add(hp, sphere(1, matte('#8a8a86', 1, { transparent: true, opacity: .5 }), 18, 10), 0, cy - ry * .45, rz * .15); stub.scale.set(rx * .8, ry * .42, rz * .8);
+    addBandolier(rig, { side: 1 }); addBandolier(rig, { side: -1, rounds: 8 });
+    addBelt(rig, { mat: M.leatherDark, w: 1.3 });
+    addShoulderPad(rig, 1, { mat: M.leatherTan, size: 1.1 }); addShoulderPad(rig, -1, { mat: M.leatherTan, size: 1.1 });
+    // chest buckle plate
+    const plate = add(rig.spine, cyl(H * .035, H * .035, H * .008, M.brassPolished, 16), 0, torsoLen * .58, cD * 1.16, Math.PI / 2);
+    // steam backpack: brass tank, copper pipes, gauge
+    const pack = add(rig.spine, group('pack'), 0, torsoLen * .52, -cD * 1.3);
+    add(pack, cyl(H * .055, H * .055, torsoLen * .62, M.brass, 20), -H * .045, 0, 0);
+    add(pack, cyl(H * .055, H * .055, torsoLen * .62, M.copper, 20), H * .055, 0, 0);
+    for (const x of [-H * .045, H * .055]) { add(pack, sphere(H * .055, x < 0 ? M.brass : M.copper, 14, 8), x, torsoLen * .31, 0).scale.y = .6; add(pack, torus(H * .057, H * .007, M.brassDark, 6, 16), x, torsoLen * .12, 0, Math.PI / 2); add(pack, torus(H * .057, H * .007, M.brassDark, 6, 16), x, -torsoLen * .15, 0, Math.PI / 2); }
+    const hose = new THREE.CatmullRomCurve3([V3(H * .01, torsoLen * .36, 0), V3(H * .06, torsoLen * .48, -H * .02), V3(H * .12, torsoLen * .36, H * .02), V3(sh * .75, torsoLen * .25, cD * 1.0 + H * .04)]);
+    add(pack, new THREE.Mesh(new THREE.TubeGeometry(hose, 20, H * .008, 6), M.leatherDark));
+    add(pack, createGauge(H * .035), H * .005, torsoLen * .1, -H * .06, 0, Math.PI, 0);
+    rig.extras.steamAnchor = add(pack, new THREE.Object3D(), 0, torsoLen * .38, 0);
+    // knee guards
+    for (const l of rig.legs) add(l.knee, new THREE.Mesh(new THREE.SphereGeometry(rig.dims.rS * 1.3, 12, 8, 0, TAU, 0, Math.PI / 2), M.leatherDark), 0, 0, rig.dims.rS * .25, Math.PI / 2).scale.set(1, .8, 1);
+  }
+  rig.root.userData.role = role;
+  finalize(rig.root);
+  return rig;
+}
+
+RACE_BUILDERS.human = { aircraft: createHumanAircraft, crew: buildHumanCrew };
+/* ====================================================================
+ *  STAGE 3 — DWARVES
+ *  Heavy riveted armoured flyer: slab hull, stub wings, twin boiler
+ *  nacelles, top turret, pipes and pressure gauges.
+ * ==================================================================== */
+
+/** Grid of rivet heads on a flat rectangle. normal: 'x' | 'y' | 'z' (the axis the plate faces). */
+function rivetRect(parent, { cx = 0, cy = 0, cz = 0, w = 1, h = 1, nx = 4, ny = 3, r = .03, normal = 'x', mat = M.brass, border = true }) {
+  const pts = [];
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+    if (border && !(i === 0 || j === 0 || i === nx - 1 || j === ny - 1)) continue;
+    const u = (nx > 1 ? i / (nx - 1) - .5 : 0) * w, v = (ny > 1 ? j / (ny - 1) - .5 : 0) * h;
+    pts.push(normal === 'x' ? V3(cx, cy + v, cz + u) : normal === 'y' ? V3(cx + u, cy, cz + v) : V3(cx + u, cy + v, cz));
+  }
+  const im = rivets(pts, r, mat); parent.add(im); return im;
+}
+
+/** Tube along a curve (pipes) with flange rings; returns the group. */
+function createPipe(points, r, mat, { flanges = [.2, .5, .8], flangeMat = M.brass, closed = false } = {}) {
+  const g = group('pipe'), curve = new THREE.CatmullRomCurve3(points, closed);
+  g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, Math.max(12, points.length * 8), r, 12), mat));
+  for (const t of flanges) {
+    const p = curve.getPointAt(t), tan = curve.getTangentAt(t);
+    const fl = add(g, cyl(r * 1.45, r * 1.45, r * .55, flangeMat, 14), p.x, p.y, p.z);
+    fl.quaternion.setFromUnitVectors(V3(0, 1, 0), tan);
+  }
+  return g;
+}
+
+function createDwarfAircraft() {
+  const ac = group('aircraft-dwarf');
+  const ud = ac.userData = newAircraftData('dwarf', 'Deepforge Bulwark');
+
+  const mkPlate = (color, seed, rivet = 9, tint = 0xffffff, metalness = .8, rough = .5) => {
+    const p = plateTexture({ color, cols: 2, rows: 2, size: 512, seed, rivetSize: rivet, grime: .9 });
+    return new THREE.MeshStandardMaterial({ map: p.map, bumpMap: p.bump, bumpScale: 2.6, color: tint, metalness, roughness: rough });
+  };
+  const hull = mkPlate('#4b4f58', 21), hullDark = mkPlate('#2d3036', 23), red = mkPlate('#80332a', 22, 9, 0xffffff, .55, .5);
+  const copperPlate = mkPlate('#b8683c', 24, 7, 0xffffff, .85, .36);
+
+  // --- main hull: thick bevelled side-profile slab
+  const prof = [[-2.85, -.7], [-1.2, -.82], [2.0, -.85], [2.85, -.45], [3.0, .3], [2.45, .85], [.9, .92], [-1.7, .85], [-2.9, .5]];
+  add(ac, slabYZ(prof, 2.35, hull, { bevel: .15 }));
+  // side armour plates (oxblood) with 3D rivets
+  for (const s of [-1, 1]) for (const [z, w] of [[1.7, 1.45], [.1, 1.5], [-1.5, 1.4]]) {
+    add(ac, box(.1, .95, w, red, 1.2), s * 1.42, .08, z);
+    rivetRect(ac, { cx: s * 1.48, cy: .08, cz: z, w: w - .16, h: .8, nx: 4, ny: 3, r: .035, normal: 'x', mat: M.brassPolished });
+    add(ac, box(.12, .06, w + .04, M.brassDark), s * 1.42, .58, z); add(ac, box(.12, .06, w + .04, M.brassDark), s * 1.42, -.42, z);
+  }
+  // belly + roof seams
+  for (const z of [-2.2, -.9, .4, 1.7]) add(ac, box(2.55, .08, .1, M.ironDark), 0, -.78, z);
+
+  // --- nose face plate, gun ports and forward guns
+  add(ac, box(2.0, 1.05, .22, red, 1.2), 0, -.08, 3.2);
+  add(ac, box(2.15, .09, .3, M.brassDark), 0, .5, 3.2); add(ac, box(2.15, .09, .3, M.brassDark), 0, -.66, 3.2);
+  rivetRect(ac, { cx: 0, cy: -.08, cz: 3.32, w: 1.8, h: .85, nx: 8, ny: 4, r: .04, normal: 'z', mat: M.brassPolished });
+  for (const s of [-1, 1]) {
+    add(ac, torus(.2, .06, M.brass, 8, 20), s * .62, -.08, 3.33);
+    const gun = add(ac, createGun({ barrels: 1, length: 1.15, r: .12, jacket: .72, mat: M.ironDark, jmat: M.copper, magazine: false }), s * .62, -.08, 3.2);
+    ud.muzzles.forward.push(...gun.userData.muzzles);
+  }
+  // nose gauge board (three big dials)
+  add(ac, box(1.5, .42, .08, M.brassDark), 0, .66, 2.62, -.45, 0, 0);
+  [-.5, 0, .5].forEach((x, i) => ud.gauges.push(add(ac, createGauge(.17), x, .7 + (i === 1 ? .02 : 0), 2.66, -.45, 0, 0)));
+
+  // --- cupola (pilot)
+  const cup = add(ac, group('cupola'), 0, .86, 1.45);
+  const dome = add(cup, sphere(.82, hull, 32, 16)); dome.scale.y = .62;
+  add(cup, torus(.8, .06, M.brass, 8, 40), 0, .02, 0, Math.PI / 2);
+  for (const a of [-.95, -.48, 0, .48, .95]) {
+    const px = Math.sin(a) * .74, pz = Math.cos(a) * .74;
+    add(cup, torus(.1, .035, M.brass, 8, 16), px, .22, pz, 0, a, 0);
+    add(cup, cylZ(.085, .085, .03, M.glass, 16), px, .22, pz).rotation.y = a;
+  }
+  add(cup, cyl(.3, .32, .08, M.brassDark, 20), 0, .5, -.06);
+  add(cup, createValveWheel(.2), 0, .56, -.06, -Math.PI / 2, 0, 0);
+  ud.seats.pilot = add(cup, new THREE.Object3D(), 0, .1, .1);
+
+  // --- top turret (gunner): open armoured drum, seat, heavy cannon
+  const tur = add(ac, group('turret'), 0, .84, -.62); ud.turret = tur;
+  add(tur, cyl(.98, 1.04, .22, hullDark, 32), 0, .1, 0);
+  add(tur, torus(.97, .06, M.brass, 8, 40), 0, .22, 0, Math.PI / 2);
+  const drum = add(tur, new THREE.Mesh(new THREE.CylinderGeometry(.78, .84, .5, 32, 1, true), hull.clone()), 0, .5, 0); drum.material.side = THREE.DoubleSide;
+  add(tur, cyl(.76, .76, .04, M.leatherDark, 28), 0, .27, 0);
+  add(tur, torus(.79, .06, M.copper, 8, 40), 0, .76, 0, Math.PI / 2);
+  add(tur, box(.46, .12, .42, M.leather), 0, .4, -.12); add(tur, box(.46, .4, .1, M.leather), 0, .6, -.36, -.15, 0, 0);
+  ud.seats.gunner = add(tur, new THREE.Object3D(), 0, .42, -.12);
+  const shield = add(tur, new THREE.Mesh(new THREE.CylinderGeometry(.82, .82, .62, 24, 1, true, -1.15, 2.3), hullDark), 0, 1.0, 0); shield.material.side = THREE.DoubleSide;
+  const cannon = add(tur, createGun({ barrels: 2, length: 1.95, r: .09, gap: .32, jacket: .55, mat: M.ironDark, jmat: M.copper, magazine: false }), 0, 1.0, .3, -.14, 0, 0);
+  add(tur, box(.8, .5, .2, M.ironDark), 0, 1.0, .35, -.14, 0, 0);
+  ud.muzzles.turret.push(...cannon.userData.muzzles);
+  add(tur, box(.32, .3, .4, M.brassDark), .62, .55, .1);                  // ammo crate
+
+  // --- boiler tank at the tail
+  const bz = -2.15, by = 1.52;
+  add(ac, cyl(.78, .78, 1.5, copperPlate, 36), 0, by, bz);
+  const bd = add(ac, sphere(.78, M.copper, 28, 12), 0, by + .75, bz); bd.scale.y = .5;
+  for (const y of [by - .6, by - .05, by + .5]) { add(ac, torus(.8, .055, M.brass, 8, 40), 0, y, bz, Math.PI / 2); ac.add(rivets(ringPoints(.81, y + .1, 28).map(p => V3(p.x, p.z, p.y)), .024, M.brassPolished)); }
+  add(ac, cyl(.1, .13, .45, M.brassDark, 14), 0, by + 1.15, bz); add(ac, sphere(.13, M.brassPolished, 12, 8), 0, by + 1.42, bz);
+  addEmitter(ac, ac, 0, by + 1.52, bz, 'steam', { rate: 14, size: .8, life: 1.8, speed: 1.1 });
+  for (const s of [-1, 1]) {
+    ud.gauges.push(add(ac, createGauge(.2), s * .74, by + .1, bz + .25, 0, s * (Math.PI / 2 - .3), 0));
+    add(ac, createValveWheel(.16), s * .72, by - .35, bz - .3, 0, s * Math.PI / 2, 0);
+  }
+
+  // --- smokestacks (thick, flared)
+  for (const s of [-1, 1]) {
+    const st = add(ac, group('stack'), s * 1.02, .85, .35); st.rotation.set(-.12, 0, -s * .1);
+    add(st, cyl(.2, .24, 1.35, M.copperDark, 20), 0, .65, 0);
+    add(st, cyl(.32, .21, .22, M.brass, 20), 0, 1.38, 0);
+    add(st, torus(.25, .04, M.brass, 6, 20), 0, .15, 0, Math.PI / 2); add(st, torus(.23, .035, M.brass, 6, 20), 0, .95, 0, Math.PI / 2);
+    addEmitter(ac, st, 0, 1.55, 0, s > 0 ? 'smoke' : 'steam', { rate: 15, size: 1.1, life: 2.5, speed: .9 });
+  }
+
+  // --- stub wings + engine nacelles with propellers
+  const wing = wingPair(loftWing({ span: 2.95, chord0: 3.0, chord1: 1.75, thick: .17, camber: .015, sweep: .45, uv: .5, tipRound: false, pts: 10 }), hull);
+  wing.children[0].position.set(1.1, -.04, -.3); wing.children[1].position.set(-1.1, -.04, -.3); ac.add(wing);
+  for (const s of [-1, 1]) {                                           // leading-edge brass tips
+    add(ac, box(.1, .42, 1.8, red), s * 4.05, -.04, -.55);
+  }
+  for (const s of [-1, 1]) {
+    const n = add(ac, group('nacelle'), s * 2.85, -.08, .5);
+    add(n, cylZ(.64, .64, 2.7, copperPlate, 32));
+    const dm = add(n, sphere(.64, M.copper, 24, 12), 0, 0, 1.35); dm.scale.z = .5;
+    for (const z of [-1.0, -.25, .55, 1.15]) { add(n, torus(.66, .05, M.brass, 8, 32), 0, 0, z); n.add(rivets(ringPoints(.67, z + .09, 26), .022, M.brassPolished)); }
+    add(n, torus(.4, .07, M.brass, 8, 24), 0, 0, 1.6);                  // intake ring around the hub
+    ud.gauges.push(add(n, createGauge(.2), s * .62, .12, .35, 0, s * Math.PI / 2, 0));
+    add(n, createValveWheel(.14), s * .6, -.2, -.5, 0, s * Math.PI / 2, 0);
+    for (const x of [-.22, .22]) {
+      add(n, cyl(.12, .09, .55, M.ironDark, 14), x, .78, -.7, -.35, 0, 0);
+      addEmitter(ac, n, x, 1.08, -.83, 'smoke', { rate: 9, size: .7, life: 2.0, speed: .8 });
+    }
+    const prop = add(n, createPropeller({ blades: 3, radius: 1.2, chord: .44, hubR: .26, mat: M.gunmetal, hubMat: M.copper, spinner: .38, spin: 22, taper: .75, thick: .1, pitch: .5, blurColor: '#b0b4bc', uv: 1 }), 0, 0, 1.58);
+    ud.props.push(prop);
+  }
+
+  // --- tail: twin fins + stabiliser
+  for (const s of [-1, 1]) {
+    add(ac, slabYZ([[-2.3, .55], [-2.9, 1.95], [-3.3, 1.95], [-3.3, .3]], .17, hull, { bevel: .05 }), s * 1.0, 0, 0);
+    add(ac, slabYZ([[-3.3, 1.95], [-3.68, 1.78], [-3.68, .25], [-3.3, .3]], .13, red, { bevel: .03 }), s * 1.0, 0, 0);
+  }
+  const stab = wingPair(loftWing({ span: 1.95, chord0: 1.5, chord1: 1.0, thick: .12, uv: .5 }), hull);
+  stab.position.set(0, .6, -2.9); ac.add(stab);
+
+  // --- landing skids on hydraulic legs
+  for (const s of [-1, 1]) {
+    add(ac, box(.5, .4, 3.8, hullDark, 1), s * .9, -1.12, -.15);
+    add(ac, cone(.25, .6, hullDark, 4), s * .9, -1.12, 1.98, Math.PI / 2, Math.PI / 4, 0).scale.set(1, 1, .8);
+    for (const z of [-1.1, 1.0]) {
+      add(ac, cyl(.1, .1, .55, M.steel, 12), s * .9, -.75, z);
+      add(ac, cyl(.14, .14, .2, M.brassDark, 12), s * .9, -.55, z);
+    }
+  }
+
+  // --- pipework along the hull
+  for (const s of [-1, 1]) {
+    ac.add(createPipe([V3(s * .7, 1.2, -2.0), V3(s * 1.28, 1.0, -1.5), V3(s * 1.52, .72, -.4), V3(s * 1.52, .66, 1.1), V3(s * 1.0, 1.0, 1.55)], .09, M.copper));
+    ac.add(createPipe([V3(s * 1.5, -.42, -2.4), V3(s * 1.55, -.42, -.5), V3(s * 1.55, -.42, 2.2)], .12, M.brassDark, { flanges: [.12, .35, .6, .85] }));
+    add(ac, createValveWheel(.16), s * 1.62, -.1, .95, 0, s * Math.PI / 2, 0);
+    ud.gauges.push(add(ac, createGauge(.15), s * 1.5, .3, 2.3, 0, s * Math.PI / 2, 0));
+  }
+
+  finalize(ac);
+  return ac;
+}
+
+/* ---------- dwarf crew ---------- */
+function addBeard(rig, { mat, len = 1, braids = 2, rings = M.brass, wide = 1, moustache = true } = {}) {
+  const { hp, rx, ry, rz, cy } = rig.head;
+  const main = add(hp, sphere(1, mat, 24, 16), 0, cy - ry * .93, rz * .5); main.scale.set(rx * .98 * wide, ry * .62, rz * .64);
+  const lower = add(hp, sphere(1, mat, 20, 14), 0, cy - ry * (1.2 + .25 * len), rz * .58); lower.scale.set(rx * .7 * wide, ry * (.6 + .35 * len), rz * .42);
+  const tip = add(hp, cone(rx * .34, ry * .8 * len, mat, 14), 0, cy - ry * (1.8 + .5 * len), rz * .62, Math.PI, 0, 0);
+  for (let b = 0; b < braids; b++) {
+    const s = braids === 1 ? 0 : (b === 0 ? -1 : 1);
+    for (let i = 0; i < 4; i++) add(hp, capsule(rx * .09, ry * .38, mat, 6), s * rx * .5, cy - ry * (1.1 + i * .3), rz * .86 + i * .005);
+    add(hp, torus(rx * .11, rx * .03, rings, 6, 12), s * rx * .5, cy - ry * 2.3, rz * .86);
+  }
+  if (moustache) for (const s of [-1, 1]) {
+    const m = add(hp, capsule(ry * .09, rx * .85, mat, 8), s * rx * .34, cy - ry * .3, rz * .93); m.rotation.z = Math.PI / 2 + s * .5;
+  }
+  return { main, lower, tip };
+}
+/** Front half-shell apron that hugs the lower torso (instead of a flat floating plate). */
+function addApron(rig, { mat = M.leatherTan, y = .2, h = .34, trim = M.brass } = {}) {
+  const { torsoLen, sh, cD, H } = rig.dims;
+  mat.side = THREE.DoubleSide;
+  const a = add(rig.spine, new THREE.Mesh(new THREE.SphereGeometry(1, 28, 14, 0, Math.PI, Math.PI * .12, Math.PI * .78), mat), 0, torsoLen * y, 0);
+  a.scale.set(sh * .95, torsoLen * h, cD * 1.04);
+  const pts = []; for (let i = 0; i < 5; i++) { const ang = .55 + i * .5; pts.push(V3(-Math.cos(ang) * sh * .95, torsoLen * (y + .02), Math.sin(ang) * cD * 1.05)); }
+  rig.spine.add(rivets(pts, H * .007, trim));
+  return a;
+}
+function addCuirass(rig, { mat, trim = M.brass } = {}) {
+  const { torsoLen, sh, cD, H } = rig.dims, sp = rig.spine;
+  const ch = add(sp, sphere(1, mat, 28, 18), 0, torsoLen * .62, cD * .12); ch.scale.set(sh * 1.1, torsoLen * .36, cD * 1.13);
+  const bl = add(sp, sphere(1, mat, 24, 14), 0, torsoLen * .32, cD * .1); bl.scale.set(sh * .9, torsoLen * .22, cD * .98);
+  const bd = add(sp, torus(1, H * .012, trim, 6, 36), 0, torsoLen * .46, 0, Math.PI / 2); bd.scale.set(sh * .98, cD * 1.02, 1);
+  const pts = []; for (let i = 0; i < 9; i++) { const a = -1.1 + i * .275; pts.push(V3(Math.sin(a) * sh * 1.1, torsoLen * .78, Math.cos(a) * cD * 1.14 + cD * .12)); }
+  sp.add(rivets(pts, H * .007, trim));
+  return ch;
+}
+function dwarfHelmet(rig, mat, { crest = false, visor = false } = {}) {
+  const { hp, rx, ry, rz, cy } = rig.head;
+  const p = addCap(rig, { mat, trim: M.brass, coverage: .53, tilt: .28, pad: 1.13, flaps: false });
+  add(hp, box(rx * .16, ry * .62, rz * .05, mat), 0, cy + ry * .22, rz * 1.1);                       // nose guard
+  for (const s of [-1, 1]) {
+    const ck = add(hp, box(rx * .1, ry * .6, rz * .62, mat), s * rx * 1.07, cy - ry * .12, rz * .02); ck.rotation.z = s * .08;
+  }
+  add(hp, box(rx * .09, ry * .18, rz * 1.9, M.brassDark), 0, cy + ry * 1.13, -rz * .05);                // ridge
+  if (crest) add(hp, cone(ry * .14, ry * .5, M.brassPolished, 8), 0, cy + ry * 1.45, rz * .1);
+  return p;
+}
+function buildDwarfCrew(role) {
+  const pilot = role === 'pilot';
+  const steel = metal('#8d939b', .5), steelDark = metal('#585d65', .55);
+  const rig = createHumanoid({
+    H: pilot ? 1.36 : 1.42, leg: .35, torso: .37, head: .2, arm: .36, sh: .2, chestD: .135, limb: .042,
+    headShape: { rx: .47, ry: .5, rz: .48 },
+    skin: pilot ? '#dd9f7c' : '#cf9272', shirt: pilot ? '#7b3222' : '#5a3c28', forearm: pilot ? '#7b3222' : '#5a3c28',
+    forearmMat: pilot ? null : steelDark, pants: pilot ? '#4a3a2c' : '#2f2c2a', boots: '#241710', gloves: '#2a1a10', hair: pilot ? '#b4501f' : '#cbc4b6', shirtRough: .65,
+  });
+  const { H, torsoLen, sh, cD, headH, rA } = rig.dims, { hp, rx, ry, rz, cy } = rig.head;
+  buildFace(rig, { noseR: .17, noseW: 1.05, noseH: 1.0, noseD: 1.2, eyeR: ry * .1, browH: .14, browW: .62, browTilt: .22, mouthMat: rig.mats.hair, earR: .13 });
+  const hair = pilot ? '#b4501f' : '#cbc4b6';
+  const hairMat = matte(hair, .85);
+  addBeard(rig, { mat: hairMat, len: pilot ? 1 : 1.25, braids: pilot ? 2 : 2, wide: pilot ? 1 : 1.12 });
+  // pigtail hair at the back
+  const nape = add(hp, sphere(1, hairMat, 14, 10), 0, cy - ry * .2, -rz * .62); nape.scale.set(rx * .95, ry * .5, rz * .5);
+
+  if (pilot) {
+    dwarfHelmet(rig, metal('#7d4a2a', .38, .9));
+    addGoggles(rig, { up: false, big: 1.5, frame: M.brassPolished, lens: new THREE.MeshStandardMaterial({ color: '#5aa6c8', roughness: .08, metalness: .2, transparent: true, opacity: .8, emissive: '#10506e', emissiveIntensity: .4 }) });
+    // padded red flight coat with big riveted straps and leather apron
+    addBelt(rig, { mat: M.leatherDark, w: 1.8, y: .12 });
+    addApron(rig, { mat: M.leatherTan.clone(), y: .26, h: .3 });
+    for (const s of [-1, 1]) addShoulderPad(rig, s, { mat: steel, rim: M.brass, size: 1.15 });
+    addScarf(rig, { mat: matte('#d8c898', .9), thick: .9 });
+    // bellows pack with copper tubes
+    const pk = add(rig.spine, group('pack'), 0, torsoLen * .5, -cD * 1.2);
+    add(pk, box(H * .2, torsoLen * .6, H * .09, M.leather), 0, 0, 0);
+    for (let i = 0; i < 4; i++) add(pk, box(H * .21, H * .008, H * .095, M.leatherDark), 0, torsoLen * (-.22 + i * .15), 0);
+    add(pk, cyl(H * .022, H * .022, torsoLen * .7, M.copper, 10), -H * .08, 0, -H * .06);
+    add(pk, cyl(H * .022, H * .022, torsoLen * .7, M.copper, 10), H * .08, 0, -H * .06);
+    add(pk, createGauge(H * .04), 0, torsoLen * .12, -H * .05, 0, Math.PI, 0);
+    for (const l of rig.legs) add(l.knee, new THREE.Mesh(new THREE.SphereGeometry(rig.dims.rS * 1.4, 12, 8, 0, TAU, 0, Math.PI / 2), steelDark), 0, 0, rig.dims.rS * .25, Math.PI / 2).scale.set(1, .8, 1);
+  } else {
+    dwarfHelmet(rig, steel.clone(), { crest: true });
+    addGoggles(rig, { up: true, big: 1.3, frame: M.brassDark, lens: new THREE.MeshStandardMaterial({ color: '#d8a040', roughness: .1, metalness: .2, transparent: true, opacity: .75 }) });
+    addCuirass(rig, { mat: steel });
+    addBelt(rig, { mat: M.leatherDark, w: 2.0, y: .1 });
+    addApron(rig, { mat: M.leather.clone(), y: .14, h: .26 });
+    for (const s of [-1, 1]) addShoulderPad(rig, s, { mat: steel, rim: M.brassPolished, size: 1.35 });
+    addBandolier(rig, { side: -1, rounds: 8 });
+    // gauntlet cuffs
+    for (const a of rig.arms) add(a.elbow, cyl(rA * 1.3, rA * 1.2, rig.dims.foreLen * .35, steelDark, 14), 0, -rig.dims.foreLen * .75, 0);
+    // iron ammunition drum backpack + feed hose
+    const pk = add(rig.spine, group('pack'), 0, torsoLen * .5, -cD * 1.35);
+    add(pk, cylZ(H * .13, H * .13, H * .1, M.ironDark, 24), 0, 0, 0);
+    add(pk, torus(H * .13, H * .015, M.brass, 6, 24), 0, 0, H * .05); add(pk, torus(H * .13, H * .015, M.brass, 6, 24), 0, 0, -H * .05);
+    add(pk, cylZ(H * .04, H * .04, H * .11, M.brass, 14), 0, 0, -H * .06);
+    const hose = new THREE.CatmullRomCurve3([V3(0, 0, H * .05), V3(sh * .5, -torsoLen * .2, cD * .5), V3(sh * .95, -torsoLen * .25, cD * 1.1), V3(sh * .6, -torsoLen * .3, cD * 1.3)]);
+    add(pk, new THREE.Mesh(new THREE.TubeGeometry(hose, 18, H * .009, 6), M.leatherDark));
+    for (const l of rig.legs) add(l.knee, new THREE.Mesh(new THREE.SphereGeometry(rig.dims.rS * 1.45, 12, 8, 0, TAU, 0, Math.PI / 2), steel), 0, 0, rig.dims.rS * .25, Math.PI / 2).scale.set(1, .8, 1);
+    // pipe in the mouth
+    const pipe = add(hp, group('pipe'), rx * .22, cy - ry * .5, rz * .95);
+    add(pipe, cylZ(ry * .035, ry * .035, ry * .5, M.leatherDark, 8), 0, 0, ry * .2);
+    const bowl = add(pipe, cyl(ry * .1, ry * .07, ry * .22, M.leatherDark, 10), 0, ry * .1, ry * .46);
+    rig.extras.pipeAnchor = add(pipe, new THREE.Object3D(), 0, ry * .26, ry * .46);
+  }
+  rig.root.userData.role = role;
+  finalize(rig.root);
+  return rig;
+}
+
+RACE_BUILDERS.dwarf = { aircraft: createDwarfAircraft, crew: buildDwarfCrew };
+/* ====================================================================
+ *  STAGE 4 — ELVES
+ *  Birch-and-canvas dragonfly: curved segmented tail boom, four
+ *  translucent veined wings, glass canopy, rear gunner turret.
+ * ==================================================================== */
+
+/** Translucent veined membrane texture (dragonfly wing / leaf). */
+function veinTexture({ tint = '90,215,175', vein = '255,236,170', seed = 5, alpha = .46, veins = 7 } = {}) {
+  return canvasTexture(512, 256, (g, w, h) => {
+    const r = rng(seed);
+    const gr = g.createLinearGradient(0, 0, w, 0);
+    gr.addColorStop(0, `rgba(${tint},${alpha + .12})`); gr.addColorStop(.6, `rgba(170,240,215,${alpha})`); gr.addColorStop(1, `rgba(190,200,255,${alpha + .06})`);
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    g.lineCap = 'round';
+    const lines = [];
+    for (let k = 0; k < veins; k++) {
+      const v0 = h * (.3 + (k / (veins - 1)) * .55), v1 = h * (.38 + (k / (veins - 1)) * .22 + r() * .05);
+      lines.push([v0, v1]);
+      g.strokeStyle = `rgba(${vein},.9)`; g.lineWidth = k === 0 ? 3.4 : 1.7;
+      g.beginPath(); g.moveTo(0, v0); g.bezierCurveTo(w * .35, v0 + (r() - .5) * 8, w * .7, lerp(v0, v1, .8), w, v1); g.stroke();
+    }
+    g.lineWidth = 1; g.strokeStyle = `rgba(${vein},.6)`;
+    for (let k = 0; k < lines.length - 1; k++) for (let i = 0; i < 26; i++) {
+      const x = w * (.08 + i * .036 + r() * .02), a = lerp(lines[k][0], lines[k][1], x / w), b = lerp(lines[k + 1][0], lines[k + 1][1], x / w + .01);
+      g.beginPath(); g.moveTo(x, a); g.lineTo(x + (r() - .5) * 10, b); g.stroke();
+    }
+    g.fillStyle = 'rgba(70,40,20,.75)'; g.fillRect(w * .86, h * .26, w * .05, h * .06);
+  }, { repeat: false });
+}
+
+/**
+ * Dragonfly-style wing, root at the origin, extending along +X, leading edge towards +Z.
+ * Returns a group with a translucent membrane + brass spar and fan of veins.
+ */
+function createDragonflyWing({ span = 4.5, chord = 1, mat, frame = M.brassPolished, ribs = 5, spar = .024, seed = 1 } = {}) {
+  const g = group('dragonfly-wing');
+  const env = (t) => (.5 + .5 * Math.min(1, t / .22)) * Math.sqrt(Math.max(0, 1 - Math.pow(t, 3))) * (1 - .22 * t);
+  const le = (x) => chord * .26 * env(x / span), te = (x) => chord * .74 * env(x / span);
+  const N = 30, shape = new THREE.Shape(), leP = [], teP = [];
+  for (let i = 0; i <= N; i++) { const x = span * i / N; leP.push(V3(x, 0, le(x))); }
+  for (let i = N; i >= 0; i--) { const x = span * i / N; teP.push(V3(x, 0, -te(x))); }
+  leP.forEach((p, i) => i ? shape.lineTo(p.x, -p.z) : shape.moveTo(p.x, -p.z));
+  teP.forEach(p => shape.lineTo(p.x, -p.z));
+  const geo = new THREE.ShapeGeometry(shape, 8); geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position, uv = geo.attributes.uv;
+  for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / span, 1 - (pos.getZ(i) + chord * .74) / chord);
+  const mem = add(g, new THREE.Mesh(geo, mat)); mem.userData.noShadow = true;
+  // brass leading-edge spar (tapered) + trailing-edge wire + fan of veins
+  const sparCurve = new THREE.CatmullRomCurve3(leP.filter((_, i) => i % 3 === 0 || i === N));
+  g.add(new THREE.Mesh(taperedTube(sparCurve, (t) => spar * (1 - .7 * t) + .004, { segments: 30, radial: 8 }), frame));
+  const teCurve = new THREE.CatmullRomCurve3(teP.filter((_, i) => i % 3 === 0 || i === N).reverse());
+  g.add(new THREE.Mesh(new THREE.TubeGeometry(teCurve, 30, .008, 5), frame));
+  for (let k = 1; k <= ribs; k++) {
+    const x = span * (k / (ribs + 1)) * 1.05, xc = Math.min(x, span * .96);
+    g.add(strut(V3(span * .02, 0, 0), V3(xc, 0, -te(xc)), .009, frame, 5));
+    g.add(strut(V3(xc, 0, le(xc)), V3(xc, 0, -te(xc)), .006, frame, 5));
+  }
+  add(g, sphere(.07, frame, 12, 8));
+  g.userData = { span, chord };
+  return g;
+}
+
+function createElfAircraft() {
+  const ac = group('aircraft-elf');
+  const ud = ac.userData = newAircraftData('elf', 'Silverwing Gossamer');
+
+  const woodTex = woodTexture({ base: '#e0c690', dark: '#a8824a', seed: 31 });
+  woodTex.center.set(.5, .5); woodTex.rotation = Math.PI / 2;
+  const birch = new THREE.MeshStandardMaterial({ map: woodTex, roughness: .5, metalness: 0 });
+  const birchDark = new THREE.MeshStandardMaterial({ map: woodTexture({ base: '#b88a54', dark: '#6f4a24', seed: 32 }), roughness: .55 });
+  const gold = M.brassPolished, goldDark = metal('#b88a30', .3);
+  const emerald = new THREE.MeshStandardMaterial({ map: fabricTexture({ base: '#2f8f6e', seed: 33, ribs: 3, stitch: '#d8e8b0', tone: '#003020' }), roughness: .7, side: THREE.DoubleSide });
+  const leather = matte('#c9a870', .65);
+  const wingMat = new THREE.MeshStandardMaterial({ map: veinTexture({ seed: 7 }), transparent: true, side: THREE.DoubleSide, roughness: .25, metalness: .05, depthWrite: false, emissive: '#1d6a4c', emissiveIntensity: .5, envMapIntensity: 1.4 });
+  const leafMat = new THREE.MeshStandardMaterial({ map: veinTexture({ seed: 12, tint: '120,235,170', vein: '255,240,190', alpha: .55 }), transparent: true, side: THREE.DoubleSide, roughness: .3, depthWrite: false, emissive: '#0f3a26', emissiveIntensity: .3 });
+
+  // --- fuselage: tapered curved tube, segmented abdomen
+  const path = new THREE.CatmullRomCurve3([V3(0, -.04, 2.7), V3(0, 0, 1.8), V3(0, .02, .6), V3(0, 0, -.6), V3(0, .1, -1.9), V3(0, .36, -3.2), V3(0, .82, -4.6), V3(0, 1.3, -5.4)]);
+  const knots = [[0, .12], [.07, .28], [.16, .41], [.27, .53], [.38, .47], [.52, .34], [.72, .21], [.9, .11], [1, .05]];
+  const radFn = (t) => { for (let i = 0; i < knots.length - 1; i++) { const [t0, r0] = knots[i], [t1, r1] = knots[i + 1]; if (t <= t1) { const k = (t - t0) / (t1 - t0); return lerp(r0, r1, k * k * (3 - 2 * k)); } } return knots.at(-1)[1]; };
+  const fus = add(ac, new THREE.Mesh(taperedTube(path, radFn, { segments: 80, radial: 22, ringsFn: (t) => 1 + (t > .38 ? .045 * Math.sin(t * 110) : 0) }), birch)); fus.scale.x = .86;
+  const onPath = (t) => path.getPointAt(t);
+  for (const t of [.2, .34, .5, .64, .8]) {                              // gilded bands
+    const p = onPath(t), tan = path.getTangentAt(t);
+    const band = add(ac, torus(radFn(t) * .88 + .012, .012 + (1 - t) * .01, gold, 6, 28), p.x, p.y, p.z);
+    band.quaternion.setFromUnitVectors(V3(0, 0, 1), tan);
+  }
+
+  // --- glass canopy + cockpit
+  const can = add(ac, group('canopy'), 0, .26, 1.0);
+  const glass = add(can, sphere(1, M.glass, 28, 18)); glass.scale.set(.36, .3, .92); glass.userData.noShadow = true;
+  for (const zr of [-.5, -.15, .25, .6]) {                              // transverse canopy ribs
+    const k = Math.sqrt(1 - Math.pow(zr / .92, 2));
+    add(can, torus(1, .04, gold, 5, 40), 0, 0, zr).scale.set(.36 * k, .3 * k, 1);
+  }
+  add(can, torus(1, .05, gold, 5, 48), 0, 0, 0, Math.PI / 2).scale.set(.36, .92, 1);   // longitudinal belt line
+  add(can, box(.34, .1, .34, leather), 0, -.1, -.05); add(can, box(.34, .36, .06, leather), 0, .1, -.26, -.3, 0, 0);   // pilot seat
+  add(can, box(.34, .14, .04, birchDark), 0, .1, .48, -.9, 0, 0);
+  for (const s of [-1, 1]) ud.gauges.push(add(can, createGauge(.06, { bezel: gold }), s * .08, .12, .45, -.9, Math.PI, 0));
+  add(can, torus(.09, .012, gold, 6, 18), 0, .06, .32, -.5, 0, 0);
+  ud.seats.pilot = add(can, new THREE.Object3D(), 0, -.05, -.02);
+
+  // --- four dragonfly wings (two pairs, V-dihedral, swept back, gently fluttering)
+  const mkWing = (side, { x, y, z, span, chord, dih, sweep, name, phase }) => {
+    const pivot = group(name), w = createDragonflyWing({ span, chord, mat: wingMat, seed: phase });
+    pivot.add(w); pivot.position.set(0, y, z);
+    pivot.rotation.set(0, sweep, dih);
+    const holder = group('wing-holder'); holder.position.set(side * x, 0, 0); holder.scale.x = side; holder.add(pivot);
+    ac.add(holder);
+    add(holder, sphere(.1, gold, 14, 10), 0, y, z); add(holder, cyl(.045, .045, .22, goldDark, 10), 0, y - .05, z, Math.PI / 2, 0, 0);
+    ud.flutter.push({ obj: pivot, axis: 'z', base: dih, amp: .035, freq: 2.4, phase });
+    return pivot;
+  };
+  for (const side of [-1, 1]) {
+    mkWing(side, { x: .3, y: .24, z: .9, span: 4.9, chord: 1.05, dih: .2, sweep: .16, name: 'wing-front', phase: 0 + (side > 0 ? 0 : .6) });
+    mkWing(side, { x: .28, y: .22, z: -.55, span: 4.5, chord: .92, dih: .1, sweep: .3, name: 'wing-rear', phase: 1.4 + (side > 0 ? 0 : .6) });
+  }
+
+  // --- tail: vertical leaf + small horizontal leaves
+  const tailEnd = V3(0, 1.28, -5.35);
+  add(ac, createDragonflyWing({ span: 1.7, chord: .6, mat: leafMat, ribs: 3, spar: .016 }), tailEnd.x, tailEnd.y, tailEnd.z, -.3, 0, Math.PI / 2);
+  for (const s of [-1, 1]) {
+    const h = group('tail-h'); h.position.copy(tailEnd).add(V3(0, -.05, .1)); h.scale.x = s; ac.add(h);
+    const lf = add(h, createDragonflyWing({ span: 1.5, chord: .5, mat: leafMat, ribs: 3, spar: .014 })); lf.rotation.set(0, .3, .12);
+  }
+
+  // --- propeller: slender four-blade, gilded spinner
+  const prop = add(ac, createPropeller({ blades: 4, radius: 1.12, chord: .22, hubR: .11, mat: birch, hubMat: gold, spinner: .42, spin: 34, taper: .5, thick: .07, pitch: .38, camber: .05, blurColor: '#f0e0b0', uv: 1.6 }), 0, -.04, 2.72);
+  ud.props.push(prop);
+
+  // --- forward guns: slim gun pod under the nose
+  const pod = add(ac, group('gun-pod'), 0, -.36, 1.45);
+  const pb = add(pod, sphere(.17, birch, 18, 12), 0, 0, 0); pb.scale.set(.9, .8, 2.2);
+  add(pod, torus(.15, .01, gold, 5, 16), 0, 0, .1); add(pod, torus(.12, .01, gold, 5, 16), 0, 0, -.2);
+  const fg = add(pod, createGun({ barrels: 2, length: 1.15, r: .022, gap: .09, jacket: .45, mat: gold, jmat: goldDark, magazine: false, brake: false }), 0, 0, .25);
+  ud.muzzles.forward.push(...fg.userData.muzzles);
+  for (const s of [-1, 1]) ac.add(strut(V3(0, -.3, 1.4), V3(s * .04, -.05, 1.1), .02, gold, 6));
+
+  // --- rear gunner turret on the tail boom
+  const tz = -2.55, tp = path.getPointAt(.52);
+  const tur = add(ac, group('turret'), 0, 0, 0); ud.turret = tur;
+  const baseY = tp.y + .26;
+  for (const a of [0, 2.1, 4.2]) tur.add(strut(V3(Math.cos(a) * .05, baseY - .22, tp.z + Math.sin(a) * .05), V3(Math.cos(a) * .42, baseY + .55, tp.z + Math.sin(a) * .42), .016, gold, 6));
+  add(tur, torus(.44, .03, gold, 8, 36), 0, baseY + .56, tp.z, Math.PI / 2);
+  add(tur, torus(.38, .018, goldDark, 6, 36), 0, baseY + .46, tp.z, Math.PI / 2);
+  const seat = add(tur, group('seat'), 0, baseY + .2, tp.z + .25);
+  add(seat, box(.34, .08, .34, leather), 0, 0, 0); add(seat, box(.34, .34, .05, leather), 0, .2, .2, .3, 0, 0);
+  add(seat, cyl(.015, .015, .26, gold, 6), .14, -.1, -.05);
+  ud.seats.gunner = add(tur, new THREE.Object3D(), 0, baseY + .3, tp.z + .25);
+  const tg = add(tur, createGun({ barrels: 2, length: 2.1, r: .028, gap: .13, jacket: .55, mat: gold, jmat: birchDark, magazine: true, brake: false }), 0, baseY + .62, tp.z - .15, -.1, Math.PI, 0);
+  tg.rotation.set(.12, Math.PI, 0);
+  add(tur, box(.22, .08, .5, birch), 0, baseY + .56, tp.z - .1);
+  ud.muzzles.turret.push(...tg.userData.muzzles);
+  for (const s of [-1, 1]) { const q = add(tur, cyl(.045, .045, .5, M.copper, 10), s * .16, baseY + .72, tp.z + .1, .5, 0, s * .1); add(tur, torus(.045, .008, gold, 5, 12), s * .16, baseY + .62, tp.z + .01, .5, 0, 0); }
+
+  // --- slender copper exhaust pipes + steam bulb with tall flute chimney
+  for (const s of [-1, 1]) {
+    const pipe = createPipe([V3(s * .22, -.12, 1.0), V3(s * .34, -.1, .1), V3(s * .3, -.02, -1.0), V3(s * .22, .08, -2.1)], .028, M.copper, { flanges: [.15, .4, .65, .9], flangeMat: gold });
+    ac.add(pipe);
+    add(ac, cone(.06, .18, gold, 12), s * .22, .09, -2.2, -Math.PI / 2 - .1, 0, 0);
+    addEmitter(ac, ac, s * .22, .1, -2.35, 'steam', { rate: 6, size: .35, life: 1.6, speed: .7, dir: V3(0, .15, -1), tint: '#e8f2ff' });
+  }
+  const bulb = add(ac, sphere(.17, M.copper, 20, 14), 0, .33, -.15); bulb.scale.y = 1.15;
+  add(ac, torus(.17, .015, gold, 5, 20), 0, .3, -.15, Math.PI / 2);
+  add(ac, cyl(.035, .05, .62, gold, 12), 0, .72, -.15); add(ac, cone(.07, .12, gold, 12), 0, 1.07, -.15, Math.PI, 0, 0);
+  add(ac, torus(.05, .01, goldDark, 5, 12), 0, .55, -.15, Math.PI / 2);
+  addEmitter(ac, ac, 0, 1.15, -.15, 'steam', { rate: 9, size: .5, life: 2.0, speed: .8, tint: '#f4f8ff' });
+
+  // --- curved skid blades
+  for (const s of [-1, 1]) {
+    const c = new THREE.CatmullRomCurve3([V3(s * .34, -.55, 1.7), V3(s * .46, -.9, .9), V3(s * .5, -.95, -.3), V3(s * .42, -.82, -1.4), V3(s * .3, -.5, -2.1)]);
+    add(ac, new THREE.Mesh(new THREE.TubeGeometry(c, 30, .03, 8), birchDark));
+    for (const [t, top] of [[.25, V3(s * .16, -.22, .9)], [.62, V3(s * .2, -.2, -.5)]]) ac.add(strut(c.getPointAt(t), top, .018, gold, 6));
+    add(ac, sphere(.045, gold, 8, 6), s * .34, -.55, 1.7);
+  }
+
+  finalize(ac);
+  return ac;
+}
+
+/* ---------- elf crew ---------- */
+function addElfEars(rig, len = .7) {
+  const { hp, rx, ry, rz, cy } = rig.head;
+  for (const s of [-1, 1]) {
+    const ear = add(hp, cone(ry * .11, ry * len, rig.mats.skin, 12), s * rx * 1.0, cy + ry * .08, -rz * .04);
+    ear.quaternion.setFromUnitVectors(V3(0, 1, 0), V3(s * .8, .5, -.35).normalize());
+    ear.position.addScaledVector(V3(s * .8, .5, -.35).normalize(), ry * len * .45);
+    add(hp, sphere(ry * .09, rig.mats.skin, 8, 6), s * rx * .98, cy, -rz * .03);
+  }
+}
+function addLongHair(rig, { mat, ponytail = true, tie = M.brassPolished, length = 1, bun = false } = {}) {
+  const { hp, rx, ry, rz, cy } = rig.head;
+  mat.side = THREE.DoubleSide;
+  const capH = add(hp, new THREE.Mesh(new THREE.SphereGeometry(1, 28, 16, 0, TAU, 0, Math.PI * .56), mat), 0, cy + ry * .02, -rz * .02);
+  capH.scale.set(rx * 1.05, ry * 1.04, rz * 1.06); capH.rotation.x = -.38;
+  const back = add(hp, sphere(1, mat, 16, 12), 0, cy - ry * .25, -rz * .6); back.scale.set(rx * .9, ry * .85, rz * .5);
+  for (const s of [-1, 1]) {                                               // face-framing locks
+    const lock = add(hp, capsule(rx * .07, ry * 1.2, mat, 6), s * rx * .92, cy - ry * .2, rz * .22); lock.rotation.z = s * .06;
+  }
+  if (bun) add(hp, sphere(ry * .3, mat, 14, 10), 0, cy + ry * .78, -rz * .55);
+  if (ponytail) {
+    const n = 8 * length;
+    for (let i = 0; i < n; i++) {
+      const rr = rx * (.19 - i * .011), y = cy - ry * (.45 + i * .42), z = -rz * (.85 + Math.sin(i * .4) * .08 + i * .06);
+      add(hp, capsule(Math.max(rr, rx * .06), ry * .5, mat, 6), 0, y, z);
+    }
+    add(hp, torus(rx * .17, rx * .03, tie, 6, 14), 0, cy - ry * .75, -rz * .93, Math.PI / 2 - .3, 0, 0);
+    add(hp, torus(rx * .08, rx * .025, tie, 6, 12), 0, cy - ry * (.45 + n * .42), -rz * (.85 + n * .06), Math.PI / 2, 0, 0);
+  }
+}
+function addCoatSkirt(rig, { mat, trim, len = .55, flare = 1.5 } = {}) {
+  const { legLen, sh, cD, H } = rig.dims; mat.side = THREE.DoubleSide;
+  const h = legLen * len;
+  const sk = add(rig.hips, new THREE.Mesh(new THREE.CylinderGeometry(1, flare, h, 32, 1, true, .42, TAU - .84), mat), 0, -h / 2 + legLen * .06, 0);
+  sk.scale.set(sh * .95, 1, cD * 1.25);
+  add(sk, new THREE.Mesh(new THREE.TorusGeometry(flare, .07, 5, 48, TAU - .84), trim), 0, -h / 2, 0, Math.PI / 2, 0, Math.PI / 2 + .42);
+  return sk;
+}
+function buildElfCrew(role) {
+  const pilot = role === 'pilot';
+  const rig = createHumanoid({
+    H: pilot ? 2.02 : 2.1, leg: .5, torso: .29, head: .125, arm: .42, sh: pilot ? .098 : .104, chestD: .06, limb: pilot ? .0195 : .021,
+    headShape: { rx: .38, ry: .52, rz: .42 },
+    skin: pilot ? '#f2dcc4' : '#e8cdb2', shirt: pilot ? '#2e7d5e' : '#244a3a', forearm: pilot ? '#2e7d5e' : '#244a3a',
+    pants: pilot ? '#e8dcc0' : '#2d2a22', boots: pilot ? '#6a4a2a' : '#2a1d14', gloves: pilot ? '#d9c79c' : '#33291f', hair: pilot ? '#d8d2c0' : '#2a2018', shirtRough: .6,
+  });
+  const { H, torsoLen, sh, cD, headH, rA, legLen } = rig.dims, { hp, rx, ry, rz, cy } = rig.head;
+  const iris = new THREE.MeshStandardMaterial({ color: pilot ? '#3fae78' : '#4a90d8', emissive: pilot ? '#103a22' : '#102a50', emissiveIntensity: .45, roughness: .2 });
+  buildFace(rig, { eyeR: ry * .125, eyeSquash: .72, eyeY: .1, eyeX: .44, pupilMat: iris, browW: .44, browH: .045, browTilt: -.22, browY: .27, noseR: .075, noseW: .7, noseH: 1.1, noseD: 1.2, mouthW: .34, mouthMat: matte('#b8645c', .5), noEars: true });
+  addElfEars(rig, .78);
+  const hairMat = matte(pilot ? '#d8d2c0' : '#2a2018', .55);
+  const gold = M.brassPolished;
+  addLongHair(rig, { mat: hairMat, ponytail: true, length: pilot ? 1.2 : 1.0, bun: !pilot });
+  const coat = matte(pilot ? '#2e7d5e' : '#244a3a', .6);
+
+  if (pilot) {
+    // slim ivory flight cap, gold goggles with green lenses, long emerald coat
+    addCap(rig, { mat: matte('#e6d8b4', .6), trim: gold, coverage: .46, tilt: .5, pad: 1.1, flaps: false, rivetsOn: false });
+    addGoggles(rig, { up: false, big: 1.2, frame: gold, strap: matte('#9a7a3a', .5), lens: new THREE.MeshStandardMaterial({ color: '#54c690', roughness: .08, metalness: .2, transparent: true, opacity: .75, emissive: '#0c4a2c', emissiveIntensity: .4 }) });
+    addCoatSkirt(rig, { mat: coat, trim: gold, len: .62, flare: 1.6 });
+    addBelt(rig, { mat: matte('#e0d2a8', .6), buckle: gold, w: .8 });
+    const cape = add(rig.spine, new THREE.Mesh(new THREE.CylinderGeometry(sh * 1.0, sh * 1.1, torsoLen * .5, 24, 1, true, Math.PI * .6, Math.PI * .8), matte('#d8cba0', .75)), 0, torsoLen * .72, 0);
+    cape.material.side = THREE.DoubleSide; cape.scale.z = cD / sh * 1.3;
+    const collar = add(rig.spine, torus(1, headH * .06, gold, 6, 24), 0, torsoLen * .96, 0, Math.PI / 2); collar.scale.set(headH * .34, headH * .3, 1);
+    for (let i = 0; i < 4; i++) add(rig.spine, sphere(H * .006, gold, 8, 6), 0, torsoLen * (.3 + i * .12), cD * .98);
+    // quiver of bolts on the back
+    const qv = add(rig.spine, group('quiver'), sh * .25, torsoLen * .5, -cD * 1.2); qv.rotation.z = -.25;
+    add(qv, cyl(H * .026, H * .022, torsoLen * .85, matte('#a88a56', .7), 14), 0, 0, 0);
+    for (let i = 0; i < 5; i++) add(qv, cone(H * .006, H * .06, matte('#f0ead8', .8), 6), (i - 2) * H * .008, torsoLen * .5, 0, 0, 0, (i - 2) * .06);
+  } else {
+    // dark forest-green coat, range-finding monocle, gold headband
+    const band = add(hp, torus(1, ry * .04, gold, 6, 36), 0, cy + ry * .45, 0, Math.PI / 2); band.scale.set(rx * 1.05, rz * 1.06, 1);
+    add(hp, cone(ry * .08, ry * .2, new THREE.MeshStandardMaterial({ color: '#4ad0a0', emissive: '#18a070', emissiveIntensity: 1.2 }), 6), 0, cy + ry * .48, rz * 1.05, Math.PI / 2, 0, 0).scale.set(1, 1, 1);
+    // monocle scope over the left eye
+    const sc = add(hp, group('scope'), -rx * .44, cy + ry * .1, rz * .92);
+    add(sc, cylZ(ry * .16, ry * .16, ry * .4, M.brassDark, 18), 0, 0, ry * .15);
+    add(sc, cylZ(ry * .12, ry * .12, ry * .08, new THREE.MeshStandardMaterial({ color: '#8ad0ff', emissive: '#2a70b0', emissiveIntensity: .8, roughness: .1 }), 18), 0, 0, ry * .36);
+    add(sc, torus(ry * .16, ry * .03, gold, 6, 18), 0, 0, ry * .35);
+    const arm = add(hp, box(rx * .05, ry * .05, rz * 1.3, gold), -rx * 1.0, cy + ry * .1, rz * .3);
+    addCoatSkirt(rig, { mat: coat, trim: gold, len: .5, flare: 1.4 });
+    addBelt(rig, { mat: M.leatherDark, buckle: gold, w: .8 });
+    addBandolier(rig, { side: 1, rounds: 8 });
+    for (const a of rig.arms) add(a.elbow, cyl(rA * 1.25, rA * 1.1, rig.dims.foreLen * .4, matte('#8a6a30', .5), 14), 0, -rig.dims.foreLen * .7, 0);
+    addShoulderPad(rig, 1, { mat: matte('#3a5a44', .5), rim: gold, size: 1.3 });
+    const cowl = add(rig.spine, new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12, 0, TAU, 0, Math.PI * .45), matte('#244a3a', .7)), 0, torsoLen * .86, -cD * .3);
+    cowl.scale.set(sh * .9, torsoLen * .2, cD * 1.3); cowl.material.side = THREE.DoubleSide;
+    // slim repeating-bolt magazine pack
+    const pk = add(rig.spine, group('pack'), 0, torsoLen * .5, -cD * 1.3);
+    add(pk, box(H * .1, torsoLen * .6, H * .05, matte('#5a4328', .7)), 0, 0, 0);
+    for (const s of [-1, 1]) add(pk, cyl(H * .014, H * .014, torsoLen * .7, gold, 8), s * H * .035, 0, -H * .035);
+    add(pk, createGauge(H * .028, { bezel: gold }), 0, torsoLen * .08, -H * .03, 0, Math.PI, 0);
+  }
+  rig.root.userData.role = role;
+  finalize(rig.root);
+  return rig;
+}
+
+RACE_BUILDERS.elf = { aircraft: createElfAircraft, crew: buildElfCrew };
+/* ====================================================================
+ *  STAGE 5 — ORCS
+ *  Welded scrap aircraft: patchwork hull, crooked asymmetric wings,
+ *  spikes, skulls, tattered banner, side-mounted gunner outrigger.
+ * ==================================================================== */
+
+/** Patchwork of mismatched, rusty, welded sheet-metal plates. Returns { map, bump }. */
+function scrapTexture({ colors = ['#7a4a2c', '#5b5f36', '#3d3f44', '#7e2f25', '#6b6e72'], seed = 1, size = 512, plates = 26, paint = null } = {}) {
+  const make = (bump) => canvasTexture(size, size, (g, w, h) => {
+    const r = rng(seed);
+    g.fillStyle = bump ? '#808080' : '#3c2f28'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < plates; i++) {
+      const pw = 70 + r() * 170, ph = 60 + r() * 150, x = r() * w, y = r() * h, rot = (r() - .5) * .24, col = colors[(r() * colors.length) | 0], bv = (128 + (r() - .5) * 80) | 0, tone = r() - .5;
+      for (const [ox, oy] of [[0, 0], [w, 0], [0, h], [-w, 0], [0, -h], [w, h], [-w, -h]]) {       // wrap so the texture tiles
+        g.save(); g.translate(x + ox, y + oy); g.rotate(rot);
+        g.fillStyle = bump ? `rgb(${bv},${bv},${bv})` : col; g.fillRect(-pw / 2, -ph / 2, pw, ph);
+        if (!bump) { g.fillStyle = tone > 0 ? `rgba(255,255,255,${tone * .12})` : `rgba(0,0,0,${-tone * .35})`; g.fillRect(-pw / 2, -ph / 2, pw, ph); }
+        g.lineWidth = 3; g.strokeStyle = bump ? '#1c1c1c' : 'rgba(0,0,0,.75)'; g.strokeRect(-pw / 2, -ph / 2, pw, ph);
+        g.fillStyle = bump ? '#d8d8d8' : 'rgba(200,180,140,.55)';                                     // weld beads
+        for (let k = 0; k < pw; k += 9) g.fillRect(-pw / 2 + k, -ph / 2 + 4, 4, 3);
+        for (let k = 0; k < ph; k += 9) g.fillRect(-pw / 2 + 4, -ph / 2 + k, 3, 4);
+        for (const [cx, cy] of [[-pw / 2 + 12, -ph / 2 + 12], [pw / 2 - 12, -ph / 2 + 12], [-pw / 2 + 12, ph / 2 - 12], [pw / 2 - 12, ph / 2 - 12]]) {
+          g.beginPath(); g.arc(cx, cy, 4, 0, TAU); g.fillStyle = bump ? '#f0f0f0' : 'rgba(30,20,10,.8)'; g.fill();
+        }
+        g.restore();
+      }
+    }
+    if (!bump) {
+      for (let i = 0; i < 46; i++) {
+        const x = r() * w, y = r() * h, rad = 14 + r() * 60, a = .08 + r() * .22, gr = g.createRadialGradient(x, y, 0, x, y, rad);
+        gr.addColorStop(0, `rgba(150,70,22,${a})`); gr.addColorStop(1, 'rgba(150,70,22,0)'); g.fillStyle = gr; g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+      }
+      g.strokeStyle = 'rgba(210,200,180,.22)'; g.lineWidth = 1;
+      for (let i = 0; i < 40; i++) { const x = r() * w, y = r() * h; g.beginPath(); g.moveTo(x, y); g.lineTo(x + (r() - .5) * 70, y + (r() - .5) * 70); g.stroke(); }
+      if (paint) { g.strokeStyle = paint; g.lineWidth = 9; g.lineCap = 'round'; for (let i = 0; i < 4; i++) { const x = r() * w * .8, y = r() * h * .8; g.beginPath(); g.moveTo(x, y); g.lineTo(x + 40 + r() * 40, y + (r() - .5) * 40); g.lineTo(x + 20, y + 50 + r() * 30); g.stroke(); } }
+    } else { for (let i = 0; i < 300; i++) { const v = (110 + r() * 40) | 0; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(r() * w, r() * h, 2, 2); } }
+  }, { data: bump });
+  return { map: make(false), bump: make(true) };
+}
+
+const _boneMat = matte('#d6c9a4', .75);
+/** Orcish skull (faces +Z), radius r. */
+function createSkull(r = .2, { mat = _boneMat, horns = false } = {}) {
+  const g = group('skull');
+  const cr = add(g, sphere(r, mat, 18, 12), 0, 0, 0); cr.scale.set(1, .95, 1.1);
+  const jaw = add(g, box(r * 1.1, r * .45, r * .9, mat), 0, -r * .75, r * .35);
+  const dark = matte('#120d0a', .9);
+  for (const s of [-1, 1]) {
+    add(g, sphere(r * .28, dark, 10, 8), s * r * .42, r * .05, r * .85).scale.set(1, 1.1, .6);
+    add(g, box(r * .12, r * .2, r * .1, mat), s * r * .5, -r * .6, r * .84);
+  }
+  add(g, cone(r * .14, r * .3, dark, 3), 0, -r * .22, r * 1.0, Math.PI, 0, 0).scale.set(1, 1, .5);
+  for (let i = -2; i <= 2; i++) add(g, box(r * .14, r * .16, r * .08, mat), i * r * .2, -r * .5, r * .88);
+  if (horns) for (const s of [-1, 1]) { const h = add(g, cone(r * .2, r * .9, M.steel, 8), s * r * .85, r * .55, 0, 0, 0, -s * 1.0); }
+  return g;
+}
+
+function createOrcAircraft() {
+  const ac = group('aircraft-orc');
+  const ud = ac.userData = newAircraftData('orc', 'Gutter Fang'); ud.cloth = [];
+  const R = rng(901);
+
+  const mk = (colors, seed, metalness = .6, rough = .62, paint = null) => {
+    const t = scrapTexture({ colors, seed, paint });
+    return new THREE.MeshStandardMaterial({ map: t.map, bumpMap: t.bump, bumpScale: 3, metalness, roughness: rough });
+  };
+  const hullMat = mk(['#7a4a2c', '#5b5f36', '#3d3f44', '#7e2f25', '#6b6e72'], 41, .55, .66, '#e8d8b0');
+  const wingMat = mk(['#6a3f26', '#4a4e2e', '#43464c', '#8a3a28'], 43, .5, .7);
+  const plateColors = ['#8a4a2a', '#5a6034', '#3a3c40', '#8a2a20', '#7a7c80', '#a8884a'];
+  const patchMats = plateColors.map((c, i) => { const p = plateTexture({ color: c, cols: 2, rows: 2, rivetSize: 8, grime: 1.5, seed: 50 + i }); return new THREE.MeshStandardMaterial({ map: p.map, bumpMap: p.bump, bumpScale: 2.6, metalness: .6, roughness: .62 }); });
+  const rust = metal('#7a4a30', .8, .5), rustDark = metal('#3a2a22', .8, .5), ironRaw = metal('#4a4c52', .6, .8);
+  const patchPick = () => patchMats[(R() * patchMats.length) | 0];
+
+  // --- hull core
+  const prof = [[-2.8, -.45], [-1.6, -.82], [1.8, -.86], [2.65, -.35], [3.0, .35], [2.1, .95], [.2, 1.08], [-1.7, .82], [-2.9, .35]];
+  add(ac, slabYZ(prof, 1.9, hullMat, { bevel: .09 }));
+  const hullTop = (z) => { const t = [[-2.9, .35], [-1.7, .82], [.2, 1.08], [2.1, .95], [3.0, .35]]; for (let i = 0; i < t.length - 1; i++) if (z >= t[i][0] && z <= t[i + 1][0]) return lerp(t[i][1], t[i + 1][1], (z - t[i][0]) / (t[i + 1][0] - t[i][0])); return .4; };
+  // bolted patch plates (random size, skewed), with rivets
+  for (const s of [-1, 1]) for (let i = 0; i < 9; i++) {
+    const w = .45 + R() * .8, h = .35 + R() * .5, z = -2.3 + R() * 4.8, y = -.5 + R() * 1.1;
+    const p = add(ac, box(.07, h, w, patchPick(), 1.4), s * 1.07, y, z); p.rotation.x = (R() - .5) * .28;
+    rivetRect(ac, { cx: s * 1.12, cy: y, cz: z, w: w - .1, h: h - .1, nx: 3, ny: 3, r: .03, normal: 'x', mat: rustDark });
+  }
+  for (let i = 0; i < 7; i++) {                                                    // roof plates
+    const w = .5 + R() * .7, d = .5 + R() * .7, z = -2.0 + R() * 4.0, x = (R() - .5) * 1.1;
+    const p = add(ac, box(w, .07, d, patchPick(), 1.4), x, hullTop(z) + .03, z); p.rotation.set(0, (R() - .5) * .5, 0);
+    p.rotation.x = -Math.atan2(hullTop(z + .1) - hullTop(z - .1), .2);
+  }
+  // weld seams (raised beads)
+  for (const s of [-1, 1]) for (const [y, l, z] of [[.25, 4.6, .2], [-.4, 4.2, .0]]) add(ac, cylZ(.03, .03, l, M.steel, 6), s * 1.06, y, z);
+
+  // --- engine snout, spikes, skull spinner, tusks
+  add(ac, cylZ(.82, .92, 1.1, mk(['#5a3a28', '#43464c', '#6b4a2c'], 44, .55, .7), 24), 0, .25, 3.3);
+  for (const z of [2.95, 3.4, 3.85]) add(ac, torus(.9, .06, rustDark, 6, 28), 0, .25, z);
+  add(ac, cylZ(.4, .45, .35, ironRaw, 20), 0, .25, 3.95);
+  for (let i = 0; i < 10; i++) { const a = (i / 10) * TAU; add(ac, cone(.07, .32, M.steel, 5), Math.cos(a) * .88, .25 + Math.sin(a) * .88, 3.65, Math.PI / 2, 0, 0); }   // ring of forward spikes
+  // bone tusks
+  for (const s of [-1, 1]) {
+    const c = new THREE.CatmullRomCurve3([V3(s * .7, .5, 2.7), V3(s * 1.15, .6, 3.3), V3(s * 1.5, 1.1, 3.8), V3(s * 1.45, 1.8, 4.0)]);
+    add(ac, new THREE.Mesh(taperedTube(c, (t) => .16 * (1 - t) + .015, { segments: 20, radial: 10 }), _boneMat));
+    add(ac, torus(.15, .035, M.steel, 5, 12), s * .75, .5, 2.75, 0, Math.PI / 2, 0);
+  }
+  // toothed lower lip
+  for (let i = -4; i <= 4; i++) add(ac, cone(.07, .3, M.steel, 5), i * .2, -.55, 3.55, Math.PI / 2 + .3, 0, 0);
+  // propeller: crude cleaver blades + skull spinner
+  const prop = add(ac, createPropeller({ blades: 3, radius: 1.45, chord: .55, hubR: .3, mat: rustDark, hubMat: ironRaw, spinner: 0, spin: 24, taper: .92, thick: .045, pitch: .35, camber: .0, blurColor: '#8a7a6a', sweep: .15, uv: 1 }), 0, .25, 4.1);
+  ud.props.push(prop);
+  const spin = add(prop, createSkull(.34), 0, 0, .35); spin.rotation.y = 0;
+  for (let i = 0; i < 3; i++) { const a = (i / 3) * TAU + .5; add(prop.userData.rotor, cone(.06, .28, M.steel, 5), Math.cos(a) * 1.2, Math.sin(a) * 1.2, .1, Math.PI / 2, 0, 0); }
+
+  // --- stacks with smoke (bent, of different sizes)
+  for (const [x, z, h, r, tilt] of [[.55, 1.9, 1.5, .19, .2], [-.5, 1.3, 1.1, .16, -.15], [.0, 2.45, .8, .13, .1]]) {
+    const st = add(ac, group('stack'), x, hullTop(z) - .05, z); st.rotation.set(-.12, 0, tilt);
+    add(st, cyl(r, r * 1.2, h, rust, 14), 0, h / 2, 0);
+    add(st, cyl(r * 1.3, r, h * .18, rustDark, 14), 0, h + h * .04, 0);
+    add(st, torus(r * 1.15, r * .15, M.steel, 5, 14), 0, h * .55, 0, Math.PI / 2);
+    rivetRect(st, { cx: 0, cy: h * .8, cz: r * 1.02, w: r * 1.4, h: .1, nx: 4, ny: 1, r: .02, normal: 'z', mat: rustDark });
+    addEmitter(ac, st, 0, h + h * .12, 0, 'smoke', { rate: 18, size: 1.2, life: 2.8, speed: .8, dark: true });
+  }
+  // side exhaust with a hot glowing tip
+  for (const s of [-1, 1]) {
+    const c = new THREE.CatmullRomCurve3([V3(s * 1.0, .1, 1.2), V3(s * 1.4, .1, .4), V3(s * 1.5, .3, -.8), V3(s * 1.2, .9, -1.6)]);
+    add(ac, new THREE.Mesh(new THREE.TubeGeometry(c, 20, .11, 8), rust));
+    for (const t of [.3, .7]) { const p = c.getPointAt(t); add(ac, torus(.14, .035, M.steel, 5, 12), p.x, p.y, p.z); }
+    add(ac, cyl(.17, .12, .16, ironRaw, 12), s * 1.2, .96, -1.66, .4, 0, 0);
+    add(ac, sphere(.1, M.glowOrange, 10, 8), s * 1.2, .98, -1.7);
+    addEmitter(ac, ac, s * 1.2, 1.1, -1.75, 'smoke', { rate: 11, size: .8, life: 2.2, speed: .8, dark: true });
+  }
+
+  // --- cockpit: scrap rim, bucket seat, slit shield, roll bar
+  const cz = .45;
+  for (const [w, d, x, z, ry] of [[1.1, .12, 0, cz + .5, 0], [1.1, .12, 0, cz - .55, .08], [.12, 1.0, .62, cz, 0], [.12, 1.0, -.62, cz, .05]]) add(ac, box(w, .3, d, patchPick(), 1.4), x, 1.2, z, 0, ry, 0);
+  add(ac, box(1.0, .06, .95, M.leatherDark), 0, 1.02, cz);
+  add(ac, cyl(.3, .27, .34, rustDark, 14), 0, 1.15, cz - .2);                                // bucket seat
+  add(ac, box(.5, .46, .08, M.leather), 0, 1.4, cz - .42, -.15, 0, 0);
+  const shield = add(ac, box(1.2, .38, .06, patchPick(), 1.4), 0, 1.55, cz + .6, -.4, 0, 0);
+  add(ac, box(.8, .06, .02, M.glass), 0, 1.55, cz + .64, -.4, 0, 0).userData.noShadow = true;
+  ac.add(createPipe([V3(-.55, 1.2, cz - .5), V3(-.5, 1.9, cz - .5), V3(.5, 1.9, cz - .5), V3(.55, 1.2, cz - .5)], .05, rust, { flanges: [] }));
+  ud.gauges.push(add(ac, createGauge(.12, { bezel: rustDark, faceColor: '#d8c8a0' }), -.22, 1.42, cz + .5, -.5, Math.PI, 0));
+  ud.gauges.push(add(ac, createGauge(.09, { bezel: M.steel }), .22, 1.42, cz + .52, -.5, Math.PI, 0));
+  add(ac, cyl(.02, .02, .5, M.steel, 6), .0, 1.25, cz + .2, .3, 0, 0);
+  add(ac, createSkull(.12), 0, 1.52, cz + .75, -.2, 0, 0);
+  ud.seats.pilot = add(ac, new THREE.Object3D(), 0, 1.2, cz - .2);
+
+  // --- crooked asymmetric wings (jagged slabs on pipe struts)
+  const wy = 1.95;
+  const wR = slabXZ([[.5, 1.5], [2.4, 1.8], [4.9, 1.25], [5.3, .55], [4.5, .0], [4.9, -.55], [4.0, -.5], [3.8, -1.0], [2.7, -.75], [2.4, -1.25], [1.2, -1.0], [.5, -1.3]], .15, wingMat, { bevel: .03 });
+  wR.position.set(0, wy, 0); wR.rotation.z = .05; wR.rotation.y = -.04; ac.add(wR);
+  const wL = slabXZ([[-.5, 1.5], [-2.4, 1.45], [-4.0, .8], [-4.1, .15], [-3.3, -.1], [-3.7, -.7], [-2.5, -.9], [-2.2, -1.2], [-.5, -1.2]], .15, wingMat, { bevel: .03 });
+  wL.position.set(0, wy - .06, .0); wL.rotation.z = -.025; wL.rotation.y = .05; ac.add(wL);
+  const mend = add(ac, box(1.6, .06, 1.0, patchMats[5], 1.4), -3.0, wy + .09, .2); mend.rotation.set(0, .2, -.025);        // patched hole
+  rivetRect(ac, { cx: -3.0, cy: wy + .13, cz: .2, w: 1.4, h: .8, nx: 6, ny: 4, r: .03, normal: 'y', mat: rustDark });
+  add(ac, box(1.2, .06, .8, patchMats[3], 1.4), 3.1, wy + .1, -.2).rotation.set(.05, -.3, .05);
+  for (const [x, sgn] of [[1.1, 1], [2.9, 1], [-1.1, -1], [-2.5, -1]]) {                // thick scrap struts
+    ac.add(strut(V3(sgn * .9, .85, .2), V3(x, wy - .1, .3), .07, rust, 8));
+    ac.add(strut(V3(sgn * .9, .4, -.6), V3(x, wy - .1, -.5), .06, rustDark, 8));
+  }
+  ac.add(strut(V3(3.0, wy - .1, .3), V3(1.1, wy - .1, .3), .03, M.steel, 6));
+  // wing-edge spikes and hanging skulls
+  for (let i = 0; i < 9; i++) add(ac, cone(.06, .3, M.steel, 5), 1.0 + i * .45, wy + .05, 1.55 + Math.sin(i * 1.3) * .2 - i * .03, Math.PI / 2, 0, 0);
+  for (let i = 0; i < 7; i++) add(ac, cone(.06, .3, M.steel, 5), -1.0 - i * .42, wy, 1.45 - i * .07, Math.PI / 2, 0, 0);
+  for (const [x, z] of [[5.0, .5], [-3.9, .5]]) {
+    const ch = new THREE.CatmullRomCurve3([V3(x, wy - .05, z), V3(x + .05, wy - .45, z), V3(x, wy - .9, z)]);
+    add(ac, new THREE.Mesh(new THREE.TubeGeometry(ch, 8, .02, 5), M.steel));
+    const sk = add(ac, createSkull(.2), x, wy - 1.15, z); sk.rotation.set(0, Math.PI * .5 * Math.sign(x), 0);
+  }
+
+  // --- tail: crooked fins, uneven stabilisers, tattered banner
+  add(ac, slabYZ([[-2.0, .7], [-2.8, 2.5], [-3.3, 2.35], [-3.4, .5]], .09, patchMats[0], { bevel: .02 }), .0, 0, 0);
+  const fin2 = add(ac, slabYZ([[-2.4, .6], [-3.1, 1.65], [-3.55, 1.5], [-3.4, .45]], .08, patchMats[1], { bevel: .02 }), .5, 0, 0); fin2.rotation.z = -.4;
+  rivetRect(ac, { cx: .06, cy: 1.5, cz: -2.85, w: .5, h: 1.2, nx: 3, ny: 5, r: .03, normal: 'x', mat: rustDark });
+  add(ac, slabXZ([[-1.9, -2.4], [-1.7, -3.5], [-.2, -3.4], [-.3, -2.6]], .1, patchMats[2]), 0, .75, 0);
+  add(ac, slabXZ([[1.9, -2.5], [2.0, -3.4], [.2, -3.3], [.3, -2.5]], .1, patchMats[4]), 0, .78, 0);
+  const rear = add(ac, createSkull(.16), 0, 2.45, -3.3); rear.rotation.y = Math.PI;
+  // banner on a pole
+  const pole = add(ac, cyl(.035, .035, 2.2, rustDark, 6), 0, 3.0, -3.0);
+  const ft = canvasTexture(128, 64, (g, w, h) => {
+    g.fillStyle = '#8a2a20'; g.fillRect(0, 0, w, h);
+    g.fillStyle = 'rgba(0,0,0,.25)'; for (let i = 0; i < 40; i++) g.fillRect(Math.random() * w, Math.random() * h, 8, 3);
+    g.fillStyle = '#e8dcc0'; g.beginPath(); g.moveTo(40, 14); g.lineTo(60, 52); g.lineTo(54, 14); g.closePath(); g.fill();      // fang glyph
+    g.beginPath(); g.moveTo(70, 14); g.lineTo(90, 52); g.lineTo(84, 14); g.closePath(); g.fill();
+  }, { repeat: false });
+  const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.3, .75, 14, 5), new THREE.MeshStandardMaterial({ map: ft, side: THREE.DoubleSide, roughness: .9 }));
+  cloth.geometry.translate(.65, 0, 0); cloth.position.set(.02, 3.7, -3.0); cloth.rotation.y = Math.PI; ac.add(cloth);
+  ud.cloth.push({ mesh: cloth, base: Float32Array.from(cloth.geometry.attributes.position.array) });
+  add(ac, cone(.07, .22, M.steel, 6), 0, 4.2, -3.0);
+
+  // --- forward guns: crude barrels bound with chain
+  for (const s of [-1, 1]) {
+    const gun = add(ac, createGun({ barrels: 1, length: 1.5, r: .095, jacket: .85, mat: rustDark, jmat: rust, magazine: false, brake: true }), s * 1.0, -.25, 2.2);
+    ud.muzzles.forward.push(...gun.userData.muzzles);
+    for (let k = 0; k < 4; k++) add(ac, torus(.13, .025, M.steel, 5, 12), s * 1.0, -.25, 2.5 + k * .28);
+    add(ac, cone(.05, .2, M.steel, 5), s * 1.0, -.1, 3.35, Math.PI / 2, 0, 0);
+    add(ac, box(.1, .4, .5, patchPick(), 1.4), s * 1.0, -.55, 2.4);
+  }
+
+  // --- side-mounted gunner outrigger turret (right side)
+  const out = add(ac, group('outrigger'), 0, 0, -.5); ud.turret = out;
+  for (const dz of [-.55, .55]) ac.add(strut(V3(1.0, .3, -.5 + dz), V3(2.3, -.1, -.5 + dz), .07, rust, 8));
+  add(out, box(1.6, .1, 1.5, patchMats[2], 1.4), 2.05, .1, 0);
+  rivetRect(out, { cx: 2.05, cy: .16, cz: 0, w: 1.4, h: 1.3, nx: 5, ny: 5, r: .03, normal: 'y', mat: rustDark });
+  for (const z of [-.7, .7]) ac.add(createPipe([V3(1.3, .15, -.5 + z), V3(1.3, .9, -.5 + z), V3(2.8, .9, -.5 + z), V3(2.8, .15, -.5 + z)], .04, M.steel, { flanges: [] }));
+  ac.add(createPipe([V3(2.8, .9, -1.2), V3(2.8, .9, .2)], .04, M.steel, { flanges: [] }));
+  add(out, cyl(.3, .27, .36, rustDark, 14), 1.55, .35, .05);                              // bucket seat
+  add(out, box(.5, .5, .08, M.leather), 1.3, .62, .05, 0, Math.PI / 2, 0);
+  ud.seats.gunner = add(out, new THREE.Object3D(), 1.55, .4, .05);
+  add(out, cyl(.1, .13, .75, ironRaw, 10), 2.4, .5, .05);                                 // gun pillar
+  const og = add(out, createGun({ barrels: 3, length: 1.7, r: .075, gap: .13, layout: 'ring', jacket: .6, mat: rustDark, jmat: rust, magazine: true }), 2.4, .92, .05);
+  og.quaternion.setFromUnitVectors(V3(0, 0, 1), V3(.9, .08, .45).normalize());
+  ud.muzzles.turret.push(...og.userData.muzzles);
+  add(out, createSkull(.14), 2.85, .45, -.55);
+  add(out, box(.35, .32, .5, patchMats[1], 1.4), 2.55, .3, .55);                           // ammo crate
+  for (let i = 0; i < 5; i++) add(out, cone(.05, .24, M.steel, 5), 2.8, .95 + .02 * i, -.5 + i * .27, 0, 0, -Math.PI / 2);
+
+  // --- landing: mismatched wheels on bent struts
+  for (const [x, R2, r2] of [[-.95, .5, .14], [.95, .38, .12]]) {
+    ac.add(strut(V3(x * .7, -.7, 1.3), V3(x * 1.1, -1.35, 1.2), .07, rustDark, 8));
+    ac.add(strut(V3(x * .7, -.7, .7), V3(x * 1.1, -1.35, 1.2), .06, rust, 8));
+    add(ac, createWheel(R2, r2, { tyre: M.rubber, hub: rustDark, spokes: 6 }), x * 1.15, -1.35, 1.2);
+  }
+  add(ac, cylX(.04, .04, 2.0, rustDark, 6), 0, -1.35, 1.2);
+  ac.add(strut(V3(0, -.3, -2.8), V3(0, -.75, -3.2), .05, rustDark, 6));
+
+  // --- chains between wing roots and nose
+  for (const s of [-1, 1]) {
+    const ch = new THREE.CatmullRomCurve3([V3(s * 1.1, 1.0, 2.2), V3(s * 1.35, .55, 2.6), V3(s * 1.1, .2, 2.95)]);
+    add(ac, new THREE.Mesh(new THREE.TubeGeometry(ch, 10, .018, 5), M.steel));
+  }
+
+  finalize(ac);
+  return ac;
+}
+
+/* ---------- orc crew ---------- */
+function addTusks(rig, { len = .55, mat = _boneMat, spread = .34 } = {}) {
+  const { hp, rx, ry, rz, cy } = rig.head;
+  for (const s of [-1, 1]) {
+    const t = add(hp, cone(ry * .1, ry * len, mat, 8), s * rx * spread, cy - ry * .52, rz * .9);
+    t.quaternion.setFromUnitVectors(V3(0, 1, 0), V3(s * .1, 1, .38).normalize());
+    t.position.y += ry * len * .4;
+    t.position.z += ry * len * .1;
+  }
+}
+function buildOrcCrew(role) {
+  const pilot = role === 'pilot';
+  const rig = createHumanoid({
+    H: pilot ? 2.2 : 2.32, leg: .42, torso: .34, head: .14, arm: .43, sh: pilot ? .185 : .2, chestD: pilot ? .115 : .125, limb: pilot ? .046 : .05,
+    headShape: { rx: .47, ry: .5, rz: .5 },
+    skin: pilot ? '#6f9b46' : '#5e8a3a', shirt: pilot ? '#4a3626' : '#6f9b46', shirtMat: pilot ? null : matte('#5e8a3a', .55), forearm: pilot ? '#6f9b46' : '#5e8a3a',
+    forearmMat: matte(pilot ? '#6f9b46' : '#5e8a3a', .55), pants: pilot ? '#3a2e24' : '#2c2622', boots: '#241a14', gloves: '#2a2018', hair: '#1c1612', shirtRough: .7,
+  });
+  const { H, torsoLen, sh, cD, headH, rA } = rig.dims, { hp, rx, ry, rz, cy } = rig.head;
+  const yellow = new THREE.MeshStandardMaterial({ color: '#e0b030', emissive: '#6a4a08', emissiveIntensity: .5, roughness: .3 });
+  const face = buildFace(rig, { eyeR: ry * .085, eyeSquash: .8, eyeY: .06, eyeX: .4, pupilMat: pilot ? yellow : new THREE.MeshStandardMaterial({ color: '#d03a28', emissive: '#6a1008', emissiveIntensity: .6 }), browW: .66, browH: .17, browTilt: .32, browY: .17, browZ: .02, noseR: .12, noseW: 1.15, noseH: .75, noseD: .9, mouthW: .62, mouthY: .52, earR: .1 });
+  face.ears.forEach(e => e.scale.set(.35, 1.4, .55));                      // small pointed orc ears (+ rings below)
+  for (const s of [-1, 1]) add(hp, torus(ry * .06, ry * .015, M.brassPolished, 5, 12), s * rx * 1.04, cy - ry * .17, -rz * .05, 0, Math.PI / 2, 0);
+  // heavy underbite jaw + tusks + brow ridge
+  const jaw = add(hp, sphere(1, rig.mats.skin, 20, 14), 0, cy - ry * .62, rz * .38); jaw.scale.set(rx * .78, ry * .42, rz * .72);
+  add(hp, box(rx * 1.5, ry * .2, rz * .42, rig.mats.skin), 0, cy + ry * .24, rz * .72).rotation.x = .15;
+  addTusks(rig, { len: pilot ? .8 : .95, spread: .36 });
+  for (let i = -2; i <= 2; i++) add(hp, box(rx * .07, ry * .07, ry * .05, _boneMat), i * rx * .13, cy - ry * .53, rz * .96);
+  // scars / war paint
+  if (pilot) { const sc = add(hp, box(rx * .04, ry * .6, ry * .02, matte('#a8644a', .7)), rx * .52, cy + ry * .05, rz * .86); sc.rotation.z = .3; }
+  else { add(hp, box(rx * 1.7, ry * .12, ry * .04, matte('#b02a20', .6)), 0, cy + ry * .03, rz * .9); add(hp, box(rx * .1, ry * .5, ry * .04, matte('#b02a20', .6)), -rx * .5, cy - ry * .25, rz * .8); }
+
+  const spikeMat = M.steel;
+  if (pilot) {
+    // dented scrap helmet with a spiked crest, welding goggles, patched leather vest, big left pauldron
+    const helm = addCap(rig, { mat: metal('#5c5e62', .55, .85), trim: rustMetal(), coverage: .5, tilt: .35, pad: 1.1, flaps: false, rivetsOn: true });
+    for (let i = 0; i < 5; i++) add(hp, cone(ry * .07, ry * (.3 + (i === 2 ? .15 : 0)), spikeMat, 6), 0, cy + ry * 1.12, (i - 2) * rz * .28, 0, 0, 0);
+    addGoggles(rig, { up: false, big: 1.35, frame: metal('#5a4a38', .6), lens: new THREE.MeshStandardMaterial({ color: '#c03020', emissive: '#701008', emissiveIntensity: .8, roughness: .1, transparent: true, opacity: .85 }) });
+    addBelt(rig, { mat: M.leatherDark, w: 1.6, buckle: _boneMat });
+    const vest = add(rig.spine, sphere(1, M.leather, 24, 14), 0, torsoLen * .62, cD * .05); vest.scale.set(sh * 1.1, torsoLen * .35, cD * 1.1);
+    for (const s of [-1, 1]) { const st = add(rig.spine, box(H * .02, torsoLen * .7, H * .01, M.leatherDark), s * sh * .35, torsoLen * .62, cD * 1.14); st.rotation.z = -s * .08; }
+    for (let i = 0; i < 4; i++) add(rig.spine, sphere(H * .008, M.steel, 6, 4), 0, torsoLen * (.4 + i * .11), cD * 1.13);
+    addShoulderPad(rig, -1, { mat: metal('#4a4c50', .55, .85), rim: M.steel, size: 1.55 });
+    for (let i = 0; i < 4; i++) { const a = rig.arms[0]; const sp = add(a.shoulder, cone(rA * .35, rA * 1.8, spikeMat, 6), (i - 1.5) * rA * 1.2, rA * 1.5, 0); sp.rotation.z = (i - 1.5) * -.2; }
+    for (const a of rig.arms) add(a.elbow, cyl(rA * 1.25, rA * 1.15, rig.dims.foreLen * .45, M.leatherDark, 12), 0, -rig.dims.foreLen * .6, 0);
+    add(rig.spine, createSkull(H * .035), 0, torsoLen * .08, cD * 1.0 + H * .02);
+    const pk = add(rig.spine, box(H * .22, torsoLen * .5, H * .09, M.leatherDark), 0, torsoLen * .5, -cD * 1.25);
+    add(rig.spine, createGauge(H * .035, { bezel: metal('#6a5a40', .6) }), 0, torsoLen * .5, -cD * 1.25 - H * .05, 0, Math.PI, 0);
+  } else {
+    // bare-chested gunner: crossed bandoliers, spiked pauldrons, dyed mohawk, goggles pushed up
+    const hawk = matte('#b02a20', .8);
+    for (let i = 0; i < 7; i++) add(hp, capsule(ry * .06, ry * (.6 - Math.abs(i - 3) * .06), hawk, 6), 0, cy + ry * 1.0 + ry * (.04), (i - 3) * rz * .24, 0, 0, 0).rotation.x = (i - 3) * -.12;
+    addGoggles(rig, { up: true, big: 1.3, frame: metal('#5a4a38', .6), lens: new THREE.MeshStandardMaterial({ color: '#6a8a70', roughness: .1, transparent: true, opacity: .7 }) });
+    addBandolier(rig, { side: 1, rounds: 8 }); addBandolier(rig, { side: -1, rounds: 8 });
+    addBelt(rig, { mat: M.leatherDark, w: 1.7, buckle: _boneMat });
+    for (const s of [-1, 1]) {
+      addShoulderPad(rig, s, { mat: metal('#4e5054', .5, .85), rim: M.steel, size: 1.65 });
+      const a = rig.arms[s > 0 ? 1 : 0];
+      for (let i = 0; i < 3; i++) { const sp = add(a.shoulder, cone(rA * .38, rA * 2.0, spikeMat, 6), (i - 1) * rA * 1.4, rA * 1.7, 0); sp.rotation.z = (i - 1) * -.3; }
+    }
+    const plate = add(rig.spine, box(sh * 1.0, torsoLen * .38, H * .012, metal('#5a4a3a', .6, .7)), 0, torsoLen * .27, cD * .96);
+    rivetRect(rig.spine, { cx: 0, cy: torsoLen * .27, cz: cD * 1.0, w: sh * .85, h: torsoLen * .3, nx: 4, ny: 3, r: H * .006, normal: 'z', mat: M.steel });
+    for (const a of rig.arms) add(a.elbow, cyl(rA * 1.3, rA * 1.2, rig.dims.foreLen * .5, metal('#4a4a4e', .6, .8), 12), 0, -rig.dims.foreLen * .62, 0);
+    add(rig.spine, createSkull(H * .04), sh * .5, torsoLen * .05, cD * .9);
+    // ammunition drum + chain-fed belt on the back
+    const pk = add(rig.spine, group('pack'), 0, torsoLen * .5, -cD * 1.35);
+    add(pk, cylZ(H * .14, H * .14, H * .11, rustMetal(), 22)); add(pk, torus(H * .14, H * .016, M.steel, 6, 22), 0, 0, H * .055);
+    for (let i = 0; i < 6; i++) add(pk, cyl(H * .012, H * .012, H * .1, M.brassPolished, 8), (i - 2.5) * H * .04, torsoLen * .3, 0, Math.PI / 2, 0, 0);
+    for (const l of rig.legs) add(l.knee, new THREE.Mesh(new THREE.SphereGeometry(rig.dims.rS * 1.4, 12, 8, 0, TAU, 0, Math.PI / 2), metal('#4e5054', .5, .85)), 0, 0, rig.dims.rS * .25, Math.PI / 2).scale.set(1, .8, 1);
+  }
+  // stitched scars on the arms
+  for (const a of rig.arms) add(a.elbow, box(rA * .15, rig.dims.foreLen * .35, rA * .05, matte('#8a5a44', .7)), rA * .75, -rig.dims.foreLen * .25, rA * .3);
+  rig.root.userData.role = role;
+  finalize(rig.root);
+  return rig;
+}
+function rustMetal() { return metal('#7a4a30', .7, .6); }
+
+RACE_BUILDERS.orc = { aircraft: createOrcAircraft, crew: buildOrcCrew };
+/* ====================================================================
+ *  PUBLIC FACTORIES — reusable from a game
+ *    createAircraft(race)            -> THREE.Group, nose towards +Z, origin ~ centre of mass
+ *                                       .userData: { props, emitters, gauges, seats, muzzles, ... }
+ *    createPilot(race, opts)         -> THREE.Group (A-pose, feet at y = 0, facing +Z)
+ *    createGunner(race, opts)        -> THREE.Group
+ *  Both crew groups expose .userData.rig (parts, idle(t)) and .userData.role.
+ * ==================================================================== */
+const RACES = ['human', 'dwarf', 'elf', 'orc'];
+
+function createAircraft(race) {
+  const b = RACE_BUILDERS[race];
+  if (!b) throw new Error(`Unknown race: ${race}`);
+  const ac = b.aircraft();
+  ac.userData.race = race;
+  return ac;
+}
+function createCrew(race, role, opts = {}) {
+  const b = RACE_BUILDERS[race];
+  if (!b) throw new Error(`Unknown race: ${race}`);
+  const rig = b.crew(role);
+  if (opts.gogglesUp !== undefined && rig.goggles) rig.goggles.setUp(opts.gogglesUp);
+  rig.root.userData.rig = rig; rig.root.userData.race = race; rig.root.userData.role = role;
+  return rig.root;
+}
+const createPilot = (race, opts) => createCrew(race, 'pilot', opts);
+const createGunner = (race, opts) => createCrew(race, 'gunner', opts);
+
+/* ====================================================================
+ *  STAGE 1 — SCENE SETUP
+ *  renderer · lighting · shadows · atmospheric background · podium ·
+ *  OrbitControls · auto-rotate button
+ * ==================================================================== */
+
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+const HAZE = new THREE.Color('#a8703f');
+scene.fog = new THREE.FogExp2(HAZE, 0.0105);
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 900);
+const HOME_CAM = { pos: V3(-4.6, 5.4, 20.2), target: V3(4.3, 1.9, 0) };
+camera.position.copy(HOME_CAM.pos);
+
+const controls = new OrbitControls(camera, canvas);
+controls.target.copy(HOME_CAM.target);
+controls.enableDamping = true; controls.dampingFactor = 0.07;
+controls.minDistance = 5; controls.maxDistance = 55;
+controls.maxPolarAngle = Math.PI * 0.56;
+controls.autoRotate = true; controls.autoRotateSpeed = 1.1;
+controls.update();
+
+const updaters = [];            // per-frame callbacks: (dt, t) => void
+
+/* ---------- sky dome + image based lighting ---------- */
+function createSkyMaterial() {
+  return new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    uniforms: {
+      top: { value: new THREE.Color('#14213a') },
+      mid: { value: new THREE.Color('#6d4a52') },
+      horizon: { value: new THREE.Color('#f2a458') },
+      bottom: { value: new THREE.Color('#3b2a2c') },
+      sunDir: { value: new THREE.Vector3(-0.55, 0.22, 0.8).normalize() },
+      sunColor: { value: new THREE.Color('#ffd9a0') },
+    },
+    vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      varying vec3 vDir;
+      uniform vec3 top; uniform vec3 mid; uniform vec3 horizon; uniform vec3 bottom; uniform vec3 sunDir; uniform vec3 sunColor;
+      void main(){
+        vec3 d = normalize(vDir);
+        float h = d.y;
+        vec3 col;
+        if (h > 0.0) {
+          col = mix(horizon, mid, smoothstep(0.0, 0.16, h));
+          col = mix(col, top, smoothstep(0.10, 0.75, h));
+        } else {
+          col = mix(horizon, bottom, smoothstep(0.0, -0.5, h));
+        }
+        float s = max(dot(d, normalize(sunDir)), 0.0);
+        col += sunColor * (pow(s, 90.0) * 1.6 + pow(s, 8.0) * 0.28);
+        gl_FragColor = vec4(col, 1.0);
+        #include <colorspace_fragment>
+      }`,
+  });
+}
+const skyMat = createSkyMaterial();
+const sky = new THREE.Mesh(new THREE.SphereGeometry(500, 48, 24), skyMat);
+sky.renderOrder = -10; sky.frustumCulled = false;
+scene.add(sky);
+
+// Environment map for metallic reflections: sky + a few bright "softbox" panels
+{
+  const envScene = new THREE.Scene();
+  envScene.add(new THREE.Mesh(new THREE.SphereGeometry(60, 48, 24), createSkyMaterial()));
+  const panel = (col, w, h, x, y, z) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color().setRGB(...col), side: THREE.DoubleSide }));
+    m.position.set(x, y, z); m.lookAt(0, 0, 0); envScene.add(m);
+  };
+  panel([7, 5.2, 3.4], 26, 12, -24, 30, 22);   // warm key
+  panel([2.2, 2.8, 4.2], 20, 8, 34, 10, 20);   // cool fill
+  panel([5, 2.6, 1.2], 30, 8, 10, 12, -40);    // orange rim
+  panel([1.6, 1.3, 1.0], 60, 60, 0, -45, 0);   // warm bounce from below
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromScene(envScene, 0.015).texture;
+  scene.environmentIntensity = 0.85;
+  pmrem.dispose();
+}
+
+/* ---------- lights ---------- */
+const hemi = new THREE.HemisphereLight('#ffd9b0', '#3a2c28', 0.5);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight('#ffd9a6', 3.3);
+key.position.set(-11, 18, 14);
+key.target.position.set(3.5, 0, 0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -17, right: 17, top: 14, bottom: -14, near: 1, far: 70 });
+key.shadow.bias = -0.0004; key.shadow.normalBias = 0.04; key.shadow.radius = 3;
+scene.add(key, key.target);
+
+const fill = new THREE.DirectionalLight('#7fa6d6', 0.9); fill.position.set(15, 6, 11); scene.add(fill);
+const rim = new THREE.DirectionalLight('#ff8f4a', 2.2); rim.position.set(6, 9, -20); scene.add(rim);
+
+const underGlow = new THREE.PointLight('#ff7a30', 22, 16, 2);     // forge glow below the aircraft
+underGlow.position.set(0, -1.2, 0); scene.add(underGlow);
+const accentLight = new THREE.PointLight('#ffb060', 30, 24, 2);   // tinted per race later
+accentLight.position.set(1, 5.5, 6); scene.add(accentLight);
+
+/* ---------- atmosphere: clouds, distant steampunk silhouettes, drifting motes ---------- */
+const atmosphere = new THREE.Group(); scene.add(atmosphere);
+{
+  const r = rng(11);
+  const cloudTex = [cloudTexture(3), cloudTexture(8), cloudTexture(21)];
+  const addCloud = (rad, y, sw, color, opacity) => {
+    const a = r() * TAU;
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTex[(r() * 3) | 0], color, transparent: true, opacity, depthWrite: false, fog: false }));
+    sp.position.set(Math.cos(a) * rad, y, Math.sin(a) * rad);
+    sp.scale.set(sw, sw * .42, 1); atmosphere.add(sp); return sp;
+  };
+  // low cloud sea under the podium
+  for (let i = 0; i < 46; i++) addCloud(14 + r() * 140, -26 + r() * 10, 60 + r() * 70, i % 3 ? '#b88468' : '#8a5a52', .55 + r() * .3);
+  // high warm clouds on the horizon
+  for (let i = 0; i < 22; i++) addCloud(120 + r() * 120, 4 + r() * 30, 70 + r() * 80, i % 2 ? '#ffc98c' : '#d08a6a', .4 + r() * .35);
+
+  // far silhouettes (fogged): airships, floating rocks, huge gears
+  const sil = new THREE.MeshBasicMaterial({ color: '#33231f' });
+  const airship = (x, y, z, s, rotY) => {
+    const g = group('airship'); g.position.set(x, y, z); g.rotation.y = rotY; g.scale.setScalar(s);
+    const env = add(g, sphere(1, sil, 20, 12), 0, 0, 0); env.scale.set(.9, .85, 3.2);
+    add(g, box(.5, .4, 1.6, sil), 0, -1.1, 0);
+    add(g, box(.1, 1.1, 1.0, sil), 0, .35, -2.8); add(g, box(2.0, .1, 1.0, sil), 0, 0, -2.8);
+    add(g, cyl(.08, .08, .9, sil, 6), 0, 1.0, .5); add(g, cyl(.08, .08, .9, sil, 6), 0, 1.0, -.6);
+    atmosphere.add(g); return g;
+  };
+  const ships = [airship(-85, 16, -120, 3.4, .7), airship(125, 30, -95, 4.6, -2.2), airship(35, 8, -175, 3.2, 1.6)];
+  ships.forEach((s, i) => updaters.push((dt) => { s.position.x += Math.cos(s.rotation.y) * dt * .6 * (i % 2 ? -1 : 1) * .3; }));
+
+  const rock = (x, y, z, s) => {
+    const g = group('rock'); g.position.set(x, y, z);
+    const top = add(g, new THREE.Mesh(new THREE.IcosahedronGeometry(1, 1), sil)); top.scale.set(1.6, .5, 1.3) ;
+    add(g, cone(1.1, 2.4, sil, 7), 0, -1.5, 0, Math.PI);
+    add(g, cyl(.1, .16, 1.6, sil, 5), .3, 1.1, 0); add(g, cone(.3, 1.2, sil, 5), .3, 2.2, 0);
+    g.scale.setScalar(s); atmosphere.add(g); return g;
+  };
+  rock(-120, 8, -80, 9); rock(95, -2, -140, 14); rock(150, 18, 20, 7); rock(-140, 22, 40, 8);
+
+  const bigGear = (x, y, z, s, speed) => {
+    const m = new THREE.Mesh(gearGeometry({ teeth: 24, inner: 1, outer: 1.18, depth: .3, hole: .2, spokeHoles: 6 }), sil);
+    m.position.set(x, y, z); m.scale.setScalar(s); m.rotation.y = .5; atmosphere.add(m);
+    updaters.push((dt) => { m.rotation.z += dt * speed; });
+  };
+  bigGear(-60, 12, -150, 26, .05); bigGear(-30, -6, -175, 16, -.07); bigGear(90, 8, -180, 30, .04);
+
+  // warm dust / ember motes
+  const N = 260, pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) { pos.set([(r() - .5) * 70, -6 + r() * 26, (r() - .5) * 60], i * 3); }
+  const dustGeo = new THREE.BufferGeometry(); dustGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const dust = new THREE.Points(dustGeo, new THREE.PointsMaterial({
+    map: softDotTexture(), color: '#ffcf90', size: .18, transparent: true, opacity: .55, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  dust.frustumCulled = false; scene.add(dust);
+  updaters.push((dt, t) => {
+    const p = dustGeo.attributes.position;
+    for (let i = 0; i < N; i++) {
+      let y = p.getY(i) + dt * (.12 + (i % 5) * .03);
+      p.setX(i, p.getX(i) + Math.sin(t * .2 + i) * dt * .15);
+      if (y > 20) y = -6;
+      p.setY(i, y);
+    }
+    p.needsUpdate = true;
+  });
+}
+
+/* ---------- display podium ---------- */
+const stageRoot = new THREE.Group(); scene.add(stageRoot);
+const AIRCRAFT_POS = V3(0, 0, 0);       // centre of the main podium (deck top is y = 0)
+const CREW_POS = V3(9.7, 0, 0);         // centre of the crew plinth
+const gears = [];                       // [{mesh, speed}] rotated each frame
+
+function buildPlatform(R, { hullDepth = 3.4, seed = 3, gearCount = 3, gearR = 1.4, rivetCount = 64 } = {}) {
+  const g = group('platform');
+  const plates = plateTexture({ color: '#4a433c', cols: Math.max(6, Math.round(R * 2.6)), rows: 3, seed });
+  const hullMat = new THREE.MeshStandardMaterial({ map: plates.map, bumpMap: plates.bump, bumpScale: 2.2, color: '#b8aca0', metalness: .85, roughness: .55 });
+  const skirtMat = metal('#2b2a2c', .5, .9);
+  const deckMat = new THREE.MeshStandardMaterial({ map: deckTexture({ seed }), color: '#cbbfae', metalness: .55, roughness: .55 });
+
+  // deck (top cap carries the inlay texture)
+  const deck = add(g, new THREE.Mesh(new THREE.CylinderGeometry(R, R, .35, 72), [skirtMat, deckMat, skirtMat]), 0, -.175, 0);
+  // brass rim + skirt
+  add(g, torus(R + .02, .13, M.brass, 12, 96), 0, -.02, 0, Math.PI / 2);
+  add(g, torus(R + .02, .1, M.brassDark, 10, 96), 0, -.36, 0, Math.PI / 2);
+  add(g, new THREE.Mesh(new THREE.CylinderGeometry(R + .18, R + .02, .5, 72), hullMat), 0, -.62, 0);
+  g.add(rivets(ringPoints(R + .16, 0, rivetCount, 1, 1).map(p => V3(p.x, -.5, p.y)), .05, M.brassPolished));
+  // tapering hull
+  add(g, new THREE.Mesh(new THREE.CylinderGeometry(R, R * .3, hullDepth, 72), hullMat), 0, -.87 - hullDepth / 2, 0);
+  for (const k of [.25, .6]) {
+    const rad = lerp(R, R * .3, k) + .03;
+    add(g, torus(rad, .11, M.brassDark, 8, 72), 0, -.87 - hullDepth * k, 0, Math.PI / 2);
+  }
+  // exhaust nozzle glow under the hull
+  add(g, cyl(R * .3, R * .22, .5, M.ironDark, 28), 0, -.87 - hullDepth - .15, 0);
+  const noz = add(g, new THREE.Mesh(new THREE.CircleGeometry(R * .2, 24), M.glowOrange), 0, -.87 - hullDepth - .41, 0, Math.PI / 2);
+  noz.rotation.x = Math.PI / 2; noz.userData.noShadow = true;
+
+  // wall-mounted rotating gears
+  // (gears sit flush on the sloping hull wall: tilt them to the wall's outward-down normal)
+  const wall = new THREE.Vector2(-(R - R * .3), -hullDepth).normalize();
+  const nr = -wall.y, ny = wall.x;
+  for (let i = 0; i < gearCount; i++) {
+    const ang = (i / gearCount) * TAU + .5 + seed * .3;
+    const k = .45 + (i % 2) * .08, yc = -.87 - hullDepth * k, rc = lerp(R, R * .3, k) + nr * .1;
+    const gm = new THREE.Mesh(gearGeometry({ teeth: 18, inner: gearR * .82, outer: gearR, depth: .28, hole: gearR * .14, spokeHoles: 5 }), i % 2 ? M.brassDark : M.copperDark);
+    const gh = new THREE.Group();
+    gh.position.set(Math.cos(ang) * rc, yc + ny * .1, Math.sin(ang) * rc);
+    gh.rotation.order = 'YXZ';
+    gh.rotation.y = Math.PI / 2 - ang; gh.rotation.x = Math.atan2(-ny, nr);
+    gh.add(gm);
+    add(gh, cyl(gearR * .22, gearR * .22, .4, M.brassPolished, 14), 0, 0, 0, Math.PI / 2);
+    g.add(gh);
+    gears.push({ mesh: gm, speed: (i % 2 ? -1 : 1) * (.25 + i * .07) });
+  }
+  return { group: g, deck };
+}
+
+function createPodium() {
+  const root = group('podium');
+  const main = buildPlatform(6.2, { seed: 3, gearCount: 4, gearR: 1.45 });
+  root.add(main.group);
+
+  const plinth = buildPlatform(2.7, { hullDepth: 2.3, seed: 9, gearCount: 2, gearR: .78, rivetCount: 36 });
+  plinth.group.position.copy(CREW_POS);
+  root.add(plinth.group);
+
+  // gangway between the two platforms
+  const bridge = group('bridge');
+  const plank = add(bridge, box(2.2, .16, 1.5, metal('#4a433c', .5, .8), .8), 0, -.08, 0);
+  for (const s of [-1, 1]) {
+    add(bridge, cyl(.04, .04, 2.2, M.brass, 8), 0, .55, s * .72, 0, 0, Math.PI / 2);
+    for (const x of [-1, 0, 1]) add(bridge, cyl(.04, .04, .6, M.brass, 8), x, .26, s * .72);
+  }
+  bridge.position.set((6.2 + CREW_POS.x - 2.7) / 2 + .1, 0, 0);
+  root.add(bridge);
+
+  // pipes linking the platforms below
+  for (const [dz, y, mat] of [[-.5, -1.4, M.copper], [.5, -2.0, M.brass]]) {
+    const curve = new THREE.CatmullRomCurve3([V3(5.5, y, dz), V3(6.8, y - .35, dz * 1.5), V3(8.2, y - .15, dz * 1.2), V3(CREW_POS.x - 2.0, y + .1, dz)]);
+    add(root, new THREE.Mesh(new THREE.TubeGeometry(curve, 24, .14, 10), mat));
+    for (const t of [.12, .5, .88]) { const p = curve.getPointAt(t); add(root, torus(.18, .05, M.brassDark, 8, 16), p.x, p.y, p.z, 0, Math.PI / 2, 0).rotation.y = Math.PI / 2 - .2; }
+  }
+
+  // bollard lamps around the main deck
+  const lampLights = [];
+  [[40, 1], [118, 1], [200, 1], [255, 1], [320, 1]].forEach(([deg], i) => {
+    const a = THREE.MathUtils.degToRad(deg), R = 5.75;
+    const lamp = group('lamp'); lamp.position.set(Math.cos(a) * R, 0, Math.sin(a) * R);
+    add(lamp, cyl(.18, .24, .22, M.brassDark, 12), 0, .11, 0);
+    add(lamp, cyl(.06, .08, .8, M.brass, 10), 0, .6, 0);
+    const bulb = add(lamp, sphere(.2, M.glowAmber, 16, 12), 0, 1.15, 0); bulb.userData.noShadow = true;
+    add(lamp, torus(.2, .025, M.brass, 6, 16), 0, 1.15, 0, Math.PI / 2);
+    add(lamp, cone(.26, .22, M.brassDark, 12), 0, 1.45, 0);
+    root.add(lamp);
+    if (i % 2 === 0) { const l = new THREE.PointLight('#ffa850', 9, 9, 2); l.position.set(lamp.position.x, 1.3, lamp.position.z); root.add(l); lampLights.push(l); }
+  });
+  updaters.push((dt, t) => lampLights.forEach((l, i) => { l.intensity = 9 + Math.sin(t * 7 + i * 2) * .5 + Math.sin(t * 13 + i) * .3; }));
+  return root;
+}
+const podium = finalize(createPodium());
+stageRoot.add(podium);
+updaters.push((dt) => gears.forEach(g => { g.mesh.rotation.z += g.speed * dt; }));
+
+/* ---------- race sets: one aircraft + pilot + gunner per race ---------- */
+const AIRCRAFT_YAW = -0.75;      // 3/4 front view
+const HOVER = 1.55;              // clearance between podium deck and the lowest point of the aircraft
+const CREW_SCALE = 1.3;          // display scale so crews read well next to the big aircraft
+const raceSets = {};
+
+function buildRaceSet(race) {
+  const aircraftPivot = group(`pivot-aircraft-${race}`), crewPivot = group(`pivot-crew-${race}`);
+  aircraftPivot.position.copy(AIRCRAFT_POS); crewPivot.position.copy(CREW_POS);
+
+  const aircraft = createAircraft(race);
+  aircraft.rotation.y = AIRCRAFT_YAW;
+  aircraftPivot.add(aircraft);
+  aircraft.updateMatrixWorld(true);
+  const bb = new THREE.Box3().setFromObject(aircraft);
+  aircraft.position.y = HOVER - bb.min.y;
+  const baseY = aircraft.position.y;
+
+  const pilot = createPilot(race), gunner = createGunner(race);
+  const crewHolder = add(crewPivot, group('crew'));
+  crewHolder.scale.setScalar(CREW_SCALE);
+  add(crewHolder, pilot, -.95, 0, .2); add(crewHolder, gunner, .95, 0, .2);
+  pilot.rotation.y = -.3; gunner.rotation.y = -.45;
+
+  stageRoot.add(aircraftPivot, crewPivot);
+  return { race, aircraftPivot, crewPivot, aircraft, pilot, gunner, baseY, amount: 1 };
+}
+for (const race of RACES) if (RACE_BUILDERS[race]) raceSets[race] = buildRaceSet(race);
+
+/* ====================================================================
+ *  STAGE 6 — INTERFACE
+ *  race portraits (rendered from the 3D crew), info panel with stats,
+ *  race switching with a smooth materialise / dematerialise transition
+ * ==================================================================== */
+
+const RACE_INFO = {
+  human: {
+    name: 'Humans', craft: 'Brass Kestrel', type: 'Steam biplane', color: '#d9a441',
+    desc: 'Inventive and adaptable, humans build quick, easy-to-mend biplanes around a roaring steam boiler. The Kestrel is a balanced dogfighter, with a ball turret slung beneath to guard its tail.',
+    stats: { speed: 7, armor: 5, maneuver: 6, firepower: 6 },
+  },
+  dwarf: {
+    name: 'Dwarves', craft: 'Deepforge Bulwark', type: 'Gunship', color: '#e0703c',
+    desc: 'Master smiths who would rather armour a mountain than fly around one. The Bulwark is a riveted flying fortress: slow and ponderous, nearly unbreakable, with a heavy cannon on its roof.',
+    stats: { speed: 3, armor: 10, maneuver: 2, firepower: 7 },
+  },
+  elf: {
+    name: 'Elves', craft: 'Silverwing Gossamer', type: 'Dragonfly', color: '#5fd0a0',
+    desc: 'Ancient craftsfolk who weave birch wood and silk canvas into impossibly light, dragonfly-winged flyers. The Gossamer outruns and outturns anything in the sky, but a single hit can tear it apart.',
+    stats: { speed: 10, armor: 2, maneuver: 9, firepower: 4 },
+  },
+  orc: {
+    name: 'Orcs', craft: 'Gutter Fang', type: 'Scrap raider', color: '#a7c24a',
+    desc: 'Brutal raiders who weld whatever they can scavenge into war machines, then bolt on more spikes. The Fang is crude, loud and smoky, but its outrigger gunner hits like a rockslide.',
+    stats: { speed: 6, armor: 6, maneuver: 4, firepower: 9 },
+  },
+};
+const STAT_LABELS = { speed: 'Speed', armor: 'Armor', maneuver: 'Maneuverability', firepower: 'Firepower' };
+
+let currentRace = 'human';
+let onRaceEnter = null, onRaceLeave = null;               // hooks: (set) => void, used by the effects in stage 7
+
+const easeOutBack = (x) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const moveToward = (v, target, step) => v < target ? Math.min(target, v + step) : Math.max(target, v - step);
+
+for (const [race, set] of Object.entries(raceSets)) {
+  const on = race === currentRace ? 1 : 0;
+  Object.assign(set, { a: on, c: on, dir: on ? -1 : 1, hold: { a: 0, c: 0 }, entered: !!on });
+}
+
+/** Switch race. `instant` skips the animation (used on boot / for tests). */
+function selectRace(race, { instant = false } = {}) {
+  if (!raceSets[race]) return;
+  const changed = race !== currentRace, prev = currentRace;
+  currentRace = race;
+  if (changed && !instant && onRaceLeave) onRaceLeave(raceSets[prev]);
+  for (const [r, set] of Object.entries(raceSets)) {
+    const want = r === race;
+    if (instant) { set.a = set.c = want ? 1 : 0; set.dir = want ? -1 : 1; set.hold.a = set.hold.c = 0; set.entered = want; continue; }
+    if (want && changed) {
+      set.hold.a = set.a < .05 ? .42 : 0;                 // let the previous aircraft leave first
+      set.hold.c = set.c < .05 ? .62 : 0;                 // crew follows the aircraft
+      set.entered = set.a > .05;
+    }
+  }
+  updateHud(race, { instant });
+  try { history.replaceState(null, '', '#' + race); } catch (_) { /* e.g. sandboxed iframe */ }
+}
+const showRaceInstant = (race) => selectRace(race, { instant: true });
+
+updaters.push((dt, t) => {
+  for (const set of Object.values(raceSets)) {
+    const want = set.race === currentRace ? 1 : 0;
+    set.dir += ((want ? -1 : 1) - set.dir) * Math.min(1, dt * 7);
+    for (const k of ['a', 'c']) {
+      if (want && set.hold[k] > 0) { set.hold[k] -= dt; continue; }
+      set[k] = moveToward(set[k], want, dt / (want ? (k === 'a' ? 1.0 : .9) : .55));
+    }
+    if (want && !set.entered && set.a > .01) { set.entered = true; if (onRaceEnter) onRaceEnter(set); }
+    if (!want) set.entered = false;
+
+    const ea = easeOutBack(set.a), ec = easeOutBack(set.c);
+    const ap = set.aircraftPivot, cp = set.crewPivot;
+    ap.visible = set.a > .002; cp.visible = set.c > .002;
+    if (ap.visible) {
+      ap.scale.setScalar(Math.max(ea, .0001));
+      ap.position.set(AIRCRAFT_POS.x, AIRCRAFT_POS.y + (1 - set.a) * set.dir * 2.8, AIRCRAFT_POS.z);
+      ap.rotation.y = (1 - set.a) * set.dir * 1.6;
+      // gentle hover bobbing
+      set.aircraft.position.y = set.baseY + Math.sin(t * 1.1) * .06;
+      set.aircraft.rotation.z = Math.sin(t * .8) * .012;
+    }
+    if (cp.visible) {
+      cp.scale.set(Math.max(ec, .0001), Math.max(ec * (1 + (1 - set.c) * .25), .0001), Math.max(ec, .0001));
+      cp.position.set(CREW_POS.x, CREW_POS.y + (1 - set.c) * set.dir * 1.2, CREW_POS.z);
+      cp.rotation.y = (1 - set.c) * set.dir * -1.1;
+      set.pilot.userData.rig.idle(t, 0); set.gunner.userData.rig.idle(t, 1.7);
+    }
+  }
+});
+
+/* ---------- accent colour follows the selected race ---------- */
+const _accent = new THREE.Color(RACE_INFO.human.color), _accentTarget = new THREE.Color(RACE_INFO.human.color);
+let accentKick = 0;
+updaters.push((dt) => {
+  _accent.lerp(_accentTarget, Math.min(1, dt * 3));
+  accentLight.color.copy(_accent).lerp(new THREE.Color('#ffb060'), .45);
+  accentLight.intensity = 30 + accentKick * 90; accentKick = Math.max(0, accentKick - dt * 1.4);
+});
+
+/* ---------- portraits: rendered from the actual 3D pilots (goggles up) ---------- */
+function renderPortraits(size = 256) {
+  const urls = {}, prevPR = renderer.getPixelRatio();
+  renderer.setPixelRatio(1); renderer.setSize(size, size, false);
+  const cam = new THREE.PerspectiveCamera(26, 1, .1, 60);
+  for (const race of RACES) {
+    const info = RACE_INFO[race], ps = new THREE.Scene();
+    ps.environment = scene.environment; ps.environmentIntensity = .9;
+    ps.background = canvasTexture(64, 64, (g, w, h) => {
+      const gr = g.createRadialGradient(w * .5, h * .42, 2, w * .5, h * .5, w * .75);
+      gr.addColorStop(0, '#' + new THREE.Color(info.color).lerp(new THREE.Color('#2a1d12'), .62).getHexString()); gr.addColorStop(1, '#120c07');
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    }, { repeat: false });
+    const pilot = createPilot(race, { gogglesUp: true });
+    pilot.rotation.y = -.32; ps.add(pilot);
+    const key = new THREE.DirectionalLight('#ffe0b0', 3.4); key.position.set(-2.5, 3, 4);
+    const fl = new THREE.DirectionalLight('#8fb4e8', 1.0); fl.position.set(3, 1, 2);
+    const rl = new THREE.DirectionalLight(info.color, 3.0); rl.position.set(2.5, 2.5, -3);
+    ps.add(key, fl, rl, new THREE.HemisphereLight('#ffd9b0', '#2a1c14', .5));
+    pilot.updateMatrixWorld(true);
+    const rig = pilot.userData.rig, hc = rig.head.hp.localToWorld(V3(0, rig.head.cy, 0)), hh = rig.head.headH, d = hh * 4.7;
+    cam.position.set(hc.x + d * .16, hc.y + hh * .06, hc.z + d);
+    cam.lookAt(hc.x, hc.y - hh * .3, hc.z);
+    renderer.render(ps, cam);
+    const c = document.createElement('canvas'); c.width = c.height = size;
+    c.getContext('2d').drawImage(renderer.domElement, 0, 0, size, size);
+    urls[race] = c.toDataURL('image/jpeg', .92);
+    ps.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  }
+  renderer.setPixelRatio(prevPR); onResize();
+  return urls;
+}
+
+/* ---------- HUD wiring ---------- */
+const hud = document.getElementById('hud'), portraitsEl = document.getElementById('portraits');
+const infoBody = document.getElementById('info-body'), infoEl = document.getElementById('info');
+const portraitButtons = {}, statBars = {};
+{
+  const urls = renderPortraits();
+  for (const race of RACES) {
+    const b = document.createElement('button');
+    b.className = 'portrait'; b.type = 'button'; b.dataset.race = race; b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', 'false');
+    b.title = `${RACE_INFO[race].name} — ${RACE_INFO[race].craft} (${RACES.indexOf(race) + 1})`;
+    b.innerHTML = `<img alt="${RACE_INFO[race].name} pilot portrait" src="${urls[race]}"><span>${RACE_INFO[race].name}</span>`;
+    b.addEventListener('click', () => selectRace(race));
+    portraitsEl.appendChild(b); portraitButtons[race] = b;
+  }
+  const stats = document.getElementById('stats');
+  for (const key of Object.keys(STAT_LABELS)) {
+    const row = document.createElement('div'); row.className = 'stat';
+    row.innerHTML = `<span>${STAT_LABELS[key]}</span><div class="bar"><i></i></div><b>0</b>`;
+    stats.appendChild(row); statBars[key] = { bar: row.querySelector('i'), val: row.querySelector('b') };
+  }
+}
+function updateHud(race, { instant = false } = {}) {
+  const info = RACE_INFO[race], root = document.documentElement.style;
+  for (const [r, b] of Object.entries(portraitButtons)) b.setAttribute('aria-selected', String(r === race));
+  const col = new THREE.Color(info.color);
+  root.setProperty('--accent', info.color);
+  root.setProperty('--accent-dim', '#' + col.clone().multiplyScalar(.45).getHexString());
+  root.setProperty('--accent-glow', `rgba(${(col.r * 255) | 0}, ${(col.g * 255) | 0}, ${(col.b * 255) | 0}, .55)`);
+  _accentTarget.set(info.color); accentKick = instant ? 0 : 1;
+  const btn = portraitButtons[race];
+  infoEl.style.setProperty('--notch-x', `${btn.offsetLeft + btn.offsetWidth / 2}px`);    // #info spans the full panel width
+  const apply = () => {
+    document.getElementById('info-name').textContent = info.name;
+    document.getElementById('info-craft').textContent = `${info.craft} · ${info.type}`;
+    document.getElementById('info-desc').textContent = info.desc;
+    for (const [k, v] of Object.entries(info.stats)) { statBars[k].bar.style.setProperty('--v', v / 10); statBars[k].val.textContent = v; }
+    infoBody.classList.remove('swap');
+  };
+  if (instant) apply(); else { infoBody.classList.add('swap'); setTimeout(apply, 190); }
+  document.getElementById('tag-pilot').style.opacity = document.getElementById('tag-gunner').style.opacity = 1;
+}
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= RACES.length) selectRace(RACES[n - 1]);
+  if (e.code === 'ArrowRight') selectRace(RACES[(RACES.indexOf(currentRace) + 1) % RACES.length]);
+  if (e.code === 'ArrowLeft') selectRace(RACES[(RACES.indexOf(currentRace) + RACES.length - 1) % RACES.length]);
+});
+window.addEventListener('resize', () => updateHud(currentRace, { instant: true }));
+
+/* floating "Pilot" / "Gunner" tags that follow the crew on screen */
+const tagEls = { pilot: document.getElementById('tag-pilot'), gunner: document.getElementById('tag-gunner') };
+const _tp = new THREE.Vector3();
+updaters.push(() => {
+  const set = raceSets[currentRace];
+  for (const role of ['pilot', 'gunner']) {
+    const el = tagEls[role], rig = set[role].userData.rig;
+    rig.head.hp.localToWorld(_tp.set(0, rig.head.cy + rig.head.headH * 1.3 + (role === 'gunner' ? .04 : 0), 0));
+    _tp.project(camera);
+    const vis = _tp.z < 1 && set.c > .6;
+    el.style.opacity = vis ? 1 : 0;
+    el.style.transform = `translate(${((_tp.x * .5 + .5) * innerWidth - el.offsetWidth / 2).toFixed(1)}px, ${((-_tp.y * .5 + .5) * innerHeight - el.offsetHeight - 6).toFixed(1)}px)`;
+  }
+});
+
+{
+  const fromHash = location.hash.slice(1);                 // deep link: index.html#orc
+  selectRace(RACES.includes(fromHash) ? fromHash : currentRace, { instant: true });
+}
+
+/* ====================================================================
+ *  STAGE 7 — POLISH & ANIMATION
+ *  propellers · steam / smoke particles · gauge needles · wing flutter ·
+ *  tattered banner · transition bursts and shock rings
+ * ==================================================================== */
+
+/* ---------- world-space soft particle system (steam, smoke, puffs) ---------- */
+function puffTexture() {
+  return canvasTexture(128, 128, (g, w, h) => {
+    const r = rng(77);
+    for (let i = 0; i < 9; i++) {
+      const x = w * (.3 + r() * .4), y = h * (.3 + r() * .4), rad = w * (.16 + r() * .2);
+      const gr = g.createRadialGradient(x, y, 0, x, y, rad);
+      gr.addColorStop(0, 'rgba(255,255,255,.55)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+    }
+    const m = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, w / 2);     // fade out towards the sprite edge
+    m.addColorStop(0, 'rgba(0,0,0,1)'); m.addColorStop(.7, 'rgba(0,0,0,.85)'); m.addColorStop(1, 'rgba(0,0,0,0)');
+    g.globalCompositeOperation = 'destination-in'; g.fillStyle = m; g.fillRect(0, 0, w, h);
+  }, { repeat: false });
+}
+
+const FX_MAX = 2400;
+const fx = (() => {
+  const P = new Float32Array(FX_MAX * 3), C = new Float32Array(FX_MAX * 3), S = new Float32Array(FX_MAX), A = new Float32Array(FX_MAX);
+  const V = new Float32Array(FX_MAX * 3), age = new Float32Array(FX_MAX), life = new Float32Array(FX_MAX), s0 = new Float32Array(FX_MAX), s1 = new Float32Array(FX_MAX);
+  const a0 = new Float32Array(FX_MAX), buoy = new Float32Array(FX_MAX), drag = new Float32Array(FX_MAX), alive = new Uint8Array(FX_MAX);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(P, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aColor', new THREE.BufferAttribute(C, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(S, 1).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute('aAlpha', new THREE.BufferAttribute(A, 1).setUsage(THREE.DynamicDrawUsage));
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    uniforms: { uMap: { value: puffTexture() }, uScale: { value: 600 } },
+    vertexShader: `
+      attribute vec3 aColor; attribute float aSize; attribute float aAlpha;
+      uniform float uScale; varying vec3 vColor; varying float vAlpha;
+      void main(){
+        vColor = aColor; vAlpha = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * uScale / max(-mv.z, 0.1);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform sampler2D uMap; varying vec3 vColor; varying float vAlpha;
+      void main(){
+        float a = texture2D(uMap, gl_PointCoord).a * vAlpha;
+        if (a < 0.004) discard;
+        gl_FragColor = vec4(vColor, a);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  });
+  const points = new THREE.Points(geo, mat); points.frustumCulled = false; points.renderOrder = 5;
+  scene.add(points);
+  const wind = V3(-.35, 0, -.12);
+  let next = 0;
+  const tmp = new THREE.Color();
+  const api = {
+    /** emit one particle. o: { pos, vel, life, size0, size1, color, alpha, buoy, drag } */
+    emit(o) {
+      const i = next; next = (next + 1) % FX_MAX;
+      P[i * 3] = o.pos.x; P[i * 3 + 1] = o.pos.y; P[i * 3 + 2] = o.pos.z;
+      V[i * 3] = o.vel.x; V[i * 3 + 1] = o.vel.y; V[i * 3 + 2] = o.vel.z;
+      tmp.set(o.color); C[i * 3] = tmp.r; C[i * 3 + 1] = tmp.g; C[i * 3 + 2] = tmp.b;
+      age[i] = 0; life[i] = o.life; s0[i] = o.size0; s1[i] = o.size1; a0[i] = o.alpha; buoy[i] = o.buoy ?? .3; drag[i] = o.drag ?? .8; alive[i] = 1;
+    },
+    update(dt) {
+      for (let i = 0; i < FX_MAX; i++) {
+        if (!alive[i]) continue;
+        age[i] += dt;
+        const t = age[i] / life[i];
+        if (t >= 1) { alive[i] = 0; S[i] = 0; A[i] = 0; continue; }
+        const k = Math.max(0, 1 - drag[i] * dt), i3 = i * 3;
+        V[i3] = V[i3] * k + wind.x * dt * .6; V[i3 + 1] = V[i3 + 1] * k + buoy[i] * dt; V[i3 + 2] = V[i3 + 2] * k + wind.z * dt * .6;
+        P[i3] += V[i3] * dt; P[i3 + 1] += V[i3 + 1] * dt; P[i3 + 2] += V[i3 + 2] * dt;
+        S[i] = lerp(s0[i], s1[i], Math.sqrt(t));
+        A[i] = a0[i] * Math.pow(1 - t, 1.4) * Math.min(1, t * 12);
+      }
+      geo.attributes.position.needsUpdate = geo.attributes.aSize.needsUpdate = geo.attributes.aAlpha.needsUpdate = geo.attributes.aColor.needsUpdate = true;
+      mat.uniforms.uScale.value = renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+    },
+  };
+  return api;
+})();
+
+const FX_KINDS = {
+  steam: { color: '#f4eee6', alpha: .55, buoy: .45, size0: .3, size1: 1.7, drag: 1.0 },
+  smoke: { color: '#4a4640', alpha: .6, buoy: .22, size0: .3, size1: 1.9, drag: .7 },
+  smokeDark: { color: '#24211f', alpha: .5, buoy: .2, size0: .3, size1: 1.8, drag: .7 },
+};
+const _ep = new THREE.Vector3(), _ev = new THREE.Vector3(), _eq = new THREE.Quaternion();
+function emitFrom(anchor, e, fxOverride) {
+  const kind = FX_KINDS[e.dark ? 'smokeDark' : e.kind] ?? FX_KINDS.steam;
+  anchor.getWorldPosition(_ep);
+  if (e.dir) _ev.copy(e.dir).transformDirection(anchor.matrixWorld).multiplyScalar(e.speed ?? 1);
+  else _ev.set(0, e.speed ?? 1, 0);
+  const sc = anchor.getWorldScale(new THREE.Vector3()).x;                   // follows the materialise scale
+  fx.emit({
+    pos: _ep.clone().add(V3((Math.random() - .5) * .06, 0, (Math.random() - .5) * .06)),
+    vel: V3(_ev.x + (Math.random() - .5) * .35, _ev.y + (Math.random() - .5) * .2, _ev.z + (Math.random() - .5) * .35),
+    life: (e.life ?? 2) * (.8 + Math.random() * .4), size0: kind.size0 * (e.size ?? 1) * sc, size1: kind.size1 * (e.size ?? 1) * sc,
+    color: e.tint ?? kind.color, alpha: kind.alpha * (e.alpha ?? 1), buoy: kind.buoy, drag: kind.drag,
+  });
+}
+/** Radial burst of steam puffs on the deck (race switch). */
+function steamBurst(center, { count = 46, radius = 1.2, size = 1.5, spread = 1.7, up = .9, color = '#f6efe4', life = 1.7 } = {}) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * TAU, r = Math.random() * radius;
+    fx.emit({
+      pos: V3(center.x + Math.cos(a) * r, center.y + .15 + Math.random() * .3, center.z + Math.sin(a) * r),
+      vel: V3(Math.cos(a) * spread * (.5 + Math.random()), up * (.4 + Math.random()), Math.sin(a) * spread * (.5 + Math.random())),
+      life: life * (.7 + Math.random() * .6), size0: size * .35, size1: size * 1.5, color, alpha: .5, buoy: .25, drag: 1.4,
+    });
+  }
+}
+/* expanding light rings on the podium decks */
+const shockRings = [];
+function shockRing(center, radius, color) {
+  const m = new THREE.Mesh(new THREE.RingGeometry(.88, 1, 72), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .9, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  m.rotation.x = -Math.PI / 2; m.position.set(center.x, .04, center.z); m.userData = { t: 0, radius };
+  scene.add(m); shockRings.push(m);
+}
+updaters.push((dt) => {
+  for (let i = shockRings.length - 1; i >= 0; i--) {
+    const r = shockRings[i], u = r.userData; u.t += dt / .9;
+    const k = 1 - Math.pow(1 - Math.min(u.t, 1), 3);
+    r.scale.setScalar(.3 + k * u.radius); r.material.opacity = .85 * (1 - Math.min(u.t, 1));
+    if (u.t >= 1) { scene.remove(r); r.geometry.dispose(); r.material.dispose(); shockRings.splice(i, 1); }
+  }
+});
+onRaceEnter = (set) => {
+  const col = RACE_INFO[set.race].color;
+  steamBurst(AIRCRAFT_POS, { count: 70, radius: 3.4, size: 1.8, spread: 2.2 });
+  steamBurst(CREW_POS, { count: 28, radius: 1.8, size: 1.1, spread: 1.4 });
+  shockRing(AIRCRAFT_POS, 6.0, col); shockRing(CREW_POS, 2.6, col);
+};
+onRaceLeave = () => {
+  steamBurst(AIRCRAFT_POS, { count: 34, radius: 2.6, size: 1.4, spread: 1.6, color: '#e8dccb' });
+  steamBurst(CREW_POS, { count: 14, radius: 1.4, size: .9, spread: 1.1, color: '#e8dccb' });
+};
+
+/* ---------- per-frame aircraft animation ---------- */
+const smoothstep = THREE.MathUtils.smoothstep;
+updaters.push((dt, t) => {
+  fx.update(dt);
+  for (const set of Object.values(raceSets)) {
+    if (!set.aircraftPivot.visible) continue;
+    const ud = set.aircraft.userData, run = smoothstep(set.a, .25, 1);        // engines spool up while materialising
+
+    // propellers: blades spin, motion-blur disc fades in with speed
+    for (const p of ud.props) {
+      const u = p.userData; u.rotor.rotation.z += u.spin * run * dt;
+      u.blur.material.opacity = .26 * run;
+    }
+    // pressure gauges: needles tremble around a working pressure
+    ud.gauges.forEach((g, i) => { const n = g.userData.needle; if (n) n.rotation.z = -.95 + Math.sin(t * 1.3 + i * 1.7) * .42 + Math.sin(t * 7.1 + i * 3.1) * .05; });
+    // elf wings flutter
+    for (const f of ud.flutter) f.obj.rotation[f.axis] = f.base + Math.sin(t * f.freq + f.phase) * f.amp * run;
+    // tattered banner
+    for (const c of ud.cloth ?? []) {
+      const pos = c.mesh.geometry.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const bx = c.base[i * 3], by = c.base[i * 3 + 1], k = bx / 1.3;
+        pos.setZ(i, Math.sin(bx * 5 - t * 6.5) * .13 * k + Math.sin(t * 3 + by * 4) * .02 * k);
+        pos.setY(i, by - k * k * .08 + Math.sin(bx * 4 - t * 5) * .03 * k);
+      }
+      pos.needsUpdate = true; c.mesh.geometry.computeVertexNormals();
+    }
+    // engine vibration
+    set.aircraft.rotation.x = Math.sin(t * 38) * .0016 * run; set.aircraft.position.x = Math.sin(t * 43) * .0025 * run;
+
+    // steam & smoke from every pipe / stack
+    if (set.a > .5) for (const e of ud.emitters) {
+      let rate = e.rate ?? 8;
+      if (e.intermittent) rate *= Math.max(0, Math.sin(t * 2.2 + 1) * 3 - 1.2) > 0 ? 1 : 0;      // safety valve vents in bursts
+      e.acc = (e.acc ?? Math.random()) + rate * dt;
+      while (e.acc >= 1) { e.acc -= 1; emitFrom(e.anchor, e); }
+    }
+  }
+  // crew: dwarf pipe smoke, human steam pack
+  const set = raceSets[currentRace];
+  if (set.c > .8) for (const role of ['pilot', 'gunner']) {
+    const ex = set[role].userData.rig.extras;
+    for (const [anchor, cfg] of [[ex.pipeAnchor, { kind: 'steam', rate: 5, size: .13, life: 2.4, speed: .35, tint: '#d9d2c8', alpha: .7 }], [ex.steamAnchor, { kind: 'steam', rate: 3, size: .12, life: 1.6, speed: .5, alpha: .6 }]]) {
+      if (!anchor) continue;
+      cfg.acc = (anchor.userData.acc ?? Math.random()) + cfg.rate * dt;
+      while (cfg.acc >= 1) { cfg.acc -= 1; emitFrom(anchor, cfg); }
+      anchor.userData.acc = cfg.acc;
+    }
+  }
+});
+
+/* steam vents on the podium hull (ambient life even before any interaction) */
+{
+  const vents = [V3(5.2, -1.4, 2.8), V3(-4.6, -1.8, 3.6), V3(2.4, -2.2, 5.2), V3(CREW_POS.x + 1.6, -1.2, 1.9)];
+  updaters.push((dt) => {
+    for (const v of vents) if (Math.random() < dt * 5) fx.emit({
+      pos: v.clone().add(V3((Math.random() - .5) * .1, 0, (Math.random() - .5) * .1)), vel: V3(.1, .5 + Math.random() * .5, .35),
+      life: 2.2 + Math.random(), size0: .3, size1: 1.5, color: '#d8ccc0', alpha: .38, buoy: .25, drag: .9,
+    });
+  });
+}
+
+/* ---------- camera buttons ---------- */
+const btnRotate = document.getElementById('btn-rotate');
+const btnReset = document.getElementById('btn-reset');
+let autoRotateWanted = true, resumeTimer = 0;
+function setAutoRotate(on) {
+  autoRotateWanted = on; controls.autoRotate = on;
+  btnRotate.setAttribute('aria-pressed', String(on));
+}
+btnRotate.addEventListener('click', () => setAutoRotate(!autoRotateWanted));
+controls.addEventListener('start', () => { controls.autoRotate = false; clearTimeout(resumeTimer); });
+controls.addEventListener('end', () => { clearTimeout(resumeTimer); resumeTimer = setTimeout(() => { controls.autoRotate = autoRotateWanted; }, 1800); });
+
+let camTween = null;
+function resetCamera() {
+  camTween = { t: 0, fromPos: camera.position.clone(), fromTarget: controls.target.clone() };
+}
+btnReset.addEventListener('click', resetCamera);
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyR') setAutoRotate(!autoRotateWanted);
+  if (e.code === 'Space') { e.preventDefault(); resetCamera(); }
+});
+updaters.push((dt) => {
+  if (!camTween) return;
+  camTween.t = Math.min(1, camTween.t + dt / 1.1);
+  const k = 1 - Math.pow(1 - camTween.t, 3);
+  camera.position.lerpVectors(camTween.fromPos, HOME_CAM.pos, k);
+  controls.target.lerpVectors(camTween.fromTarget, HOME_CAM.target, k);
+  if (camTween.t >= 1) camTween = null;
+});
+
+/* ---------- resize + main loop ---------- */
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h); camera.aspect = w / h;
+  // keep the whole scene (aircraft + crew) in frame on narrow windows
+  camera.fov = w / h < 1.4 ? Math.min(40 + (1.4 - w / h) * 30, 66) : 40;
+  // shift the picture so the race panel never covers the aircraft: right on wide screens, down on phones
+  const narrow = w <= 700;
+  const shiftX = narrow ? 0 : (w > 900 ? Math.min(w * .12, 190) : 0), shiftY = narrow ? h * .2 : 0;
+  if (shiftX || shiftY) camera.setViewOffset(w, h, -shiftX, -shiftY, w, h); else camera.clearViewOffset();
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', onResize); onResize();
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  for (const u of updaters) u(dt, t);
+  sky.position.copy(camera.position);
+  controls.update();
+  renderer.render(scene, camera);
+});
+document.getElementById('loading').classList.add('done');
+
+window.__hangar = { THREE, scene, camera, controls, renderer, updaters, setAutoRotate, raceSets, selectRace, showRaceInstant, createAircraft, createPilot, createGunner };
+</script>
+</body>
+</html>

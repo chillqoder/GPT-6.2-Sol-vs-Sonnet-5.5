@@ -1,0 +1,2965 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Steampunk World — Aerial Battlefield</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='13' fill='%23b8862b'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23221a10'/%3E%3C/svg%3E">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f14; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; color: #e8dcc0; user-select: none; }
+  canvas { display: block; outline: none; }
+  .panel { position: fixed; background: rgba(24, 18, 12, 0.62); border: 1px solid rgba(214, 170, 90, 0.35); border-radius: 6px; backdrop-filter: blur(3px); pointer-events: none; }
+  #fps { top: 10px; left: 10px; padding: 6px 10px; font: 600 13px/1.35 ui-monospace, Menlo, Consolas, monospace; color: #ffd98a; }
+  #fps small { color: #b9a77c; font-weight: 400; }
+  #hint { right: 10px; top: 10px; padding: 8px 12px; font-size: 12.5px; line-height: 1.6; }
+  #hint b { color: #ffd98a; font-weight: 600; display: inline-block; min-width: 54px; }
+  #hint .dim { color: #a8987a; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0b0f14; color: #e8c37a; font-size: 18px; letter-spacing: 0.08em; z-index: 10; transition: opacity .6s; }
+  #loading.done { opacity: 0; pointer-events: none; }
+  .ui { pointer-events: auto; }
+  #timebar { left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 8px 14px; font-size: 12.5px; }
+  #timebar input[type=range] { width: min(320px, 34vw); accent-color: #e0a845; cursor: pointer; }
+  #timebar button { background: #3a2a16; color: #ffd98a; border: 1px solid #b8862b; border-radius: 5px; padding: 4px 10px; cursor: pointer; font: 600 12px "Segoe UI", system-ui, sans-serif; white-space: nowrap; }
+  #timebar button:hover { background: #55391a; }
+  #timebar button.on { background: #b8862b; color: #1c1308; }
+  #clock { font: 600 17px ui-monospace, Menlo, Consolas, monospace; min-width: 50px; color: #ffd98a; }
+  #phase { min-width: 46px; color: #b9a77c; }
+  /* @@UI_CSS */
+</style>
+</head>
+<body>
+<div id="loading">Forging the world…</div>
+<div id="fps" class="panel">FPS —</div>
+<div id="hint" class="panel">
+  <b>Mouse</b> look <span class="dim">(click scene to capture · Esc to release)</span><br>
+  <b>W A S D</b> move &nbsp; <b>Q / E</b> down / up<br>
+  <b>Shift</b> boost &nbsp; <b>Wheel</b> flight speed
+</div>
+<div id="timebar" class="panel ui">
+  <span id="clock">09:00</span><span id="phase">Day</span>
+  <input id="timeSlider" type="range" min="0" max="24" step="0.01" value="9" title="Time of day">
+  <button id="btnPause" title="Pause / resume time">⏸</button>
+  <button id="btnSpeed" title="Speed up time">⏩ Speed ×1</button>
+</div>
+<!-- @@UI_HTML -->
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// let the browser paint the "Forging the world…" screen before the (synchronous) world generation starts
+await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 40)));
+const T_BUILD0 = performance.now();
+
+/* ======================================================================
+   0. UTILITIES, NOISE
+   ====================================================================== */
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const TAU = Math.PI * 2;
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(20260822);          // world-building random stream
+const rr = (a, b) => a + (b - a) * rand();  // random range
+
+const PERM = new Uint8Array(512);
+{
+  const nr = mulberry32(90210), p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) { const j = Math.floor(nr() * (i + 1)); const t = p[i]; p[i] = p[j]; p[j] = t; }
+  for (let i = 0; i < 512; i++) PERM[i] = p[i & 255];
+}
+const GX = new Float32Array([1, -1, 1, -1, 1, -1, 0, 0]);
+const GY = new Float32Array([1, 1, -1, -1, 0, 0, 1, -1]);
+function noise2(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const X = xi & 255, Y = yi & 255;
+  const u = xf * xf * xf * (xf * (xf * 6 - 15) + 10);
+  const v = yf * yf * yf * (yf * (yf * 6 - 15) + 10);
+  const a = PERM[PERM[X] + Y] & 7, b = PERM[PERM[X + 1] + Y] & 7;
+  const c = PERM[PERM[X] + Y + 1] & 7, d = PERM[PERM[X + 1] + Y + 1] & 7;
+  const n00 = GX[a] * xf + GY[a] * yf;
+  const n10 = GX[b] * (xf - 1) + GY[b] * yf;
+  const n01 = GX[c] * xf + GY[c] * (yf - 1);
+  const n11 = GX[d] * (xf - 1) + GY[d] * (yf - 1);
+  const nx0 = n00 + (n10 - n00) * u, nx1 = n01 + (n11 - n01) * u;
+  return nx0 + (nx1 - nx0) * v;
+}
+function fbm(x, y, oct) {
+  let s = 0, a = 1, f = 1, n = 0;
+  for (let i = 0; i < oct; i++) { s += a * noise2(x * f + i * 31.7, y * f - i * 17.3); n += a; a *= 0.5; f *= 2.02; }
+  return s / n;
+}
+function ridged(x, y, oct) {
+  let s = 0, a = 1, f = 1, n = 0;
+  for (let i = 0; i < oct; i++) { const r = 1 - Math.abs(noise2(x * f + i * 13.1, y * f + i * 7.7)); s += a * r * r; n += a; a *= 0.5; f *= 2.05; }
+  return s / n;
+}
+
+/* ======================================================================
+   1. WORLD CONSTANTS, RIVERS, HEIGHT FIELD
+   ====================================================================== */
+const WORLD_HALF = 1500;      // gameplay area  (3000 x 3000)
+const TERRAIN_HALF = 1800;    // terrain mesh extends slightly into the sea
+const GRID_N = 320;           // terrain segments per side
+const RIVER_W = 52;           // river half-width scale
+
+// Four race zones (quadrants) -- centres of their "core" areas
+const ZONES = {
+  elf:   { x: -800, z: -800, name: 'Elven Forest' },
+  dwarf: { x:  850, z: -850, name: 'Dwarven Highlands' },
+  human: { x: -780, z:  760, name: 'Human City' },
+  orc:   { x:  800, z:  800, name: 'Orc Wastes' },
+};
+
+// Two rivers cross the world and separate the four zones.
+const riverNSx = (z) => 34 * Math.sin(z * 0.0042 + 1.1) + 20 * Math.sin(z * 0.0113 + 2.3);
+const riverEWz = (x) => 38 * Math.sin(x * 0.0036 + 0.4) + 18 * Math.sin(x * 0.0107 + 4.2);
+const riverNSdx = (z) => 34 * 0.0042 * Math.cos(z * 0.0042 + 1.1) + 20 * 0.0113 * Math.cos(z * 0.0113 + 2.3);
+const riverEWdz = (x) => 38 * 0.0036 * Math.cos(x * 0.0036 + 0.4) + 18 * 0.0107 * Math.cos(x * 0.0107 + 4.2);
+function riverDist(x, z) {
+  const a = Math.abs(x - riverNSx(z)), b = Math.abs(z - riverEWz(x));
+  const k = 30, h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * k * 0.25;
+}
+
+function baseHills(x, z) {
+  const n1 = fbm(x * 0.0021 + 10, z * 0.0021 + 20, 4);
+  const n2 = fbm(x * 0.0065 + 50, z * 0.0065 - 30, 3);
+  const n3 = fbm(x * 0.0150 - 9, z * 0.0150 + 41, 2);
+  const hills = Math.max(0, n1 + 0.25) * 1.25;           // rounded hill masses with flat valleys between
+  return 22 + hills * hills * 95 + n1 * 24 + n2 * 12 + n3 * 3.5;
+}
+
+/* Height modifiers added by individual zones (registered below, in stage order). */
+const heightMods = [];
+/* ---- Human city layout (pure data here; geometry is built later) ---- */
+const CITY = (() => {
+  const C = ZONES.human, ROT = 0.28, P = 44, BLOCK = 36, R0 = 64;
+  const cs = Math.cos(ROT), sn = Math.sin(ROT);
+  const toWorld = (u, v) => [C.x + u * cs - v * sn, C.z + u * sn + v * cs];
+  const radiusAt = (ang) => 392 + 40 * noise2(Math.cos(ang) * 1.4 + 5, Math.sin(ang) * 1.4 + 9);
+  const blocks = [];
+  for (let j = -11; j <= 11; j++) for (let i = -11; i <= 11; i++) {
+    const u = i * P, v = j * P, r = Math.hypot(u, v);
+    if (r < R0 + 8 || r > radiusAt(Math.atan2(v, u)) - 24) continue;
+    blocks.push({ i, j, u, v, r });
+  }
+  return { C, ROT, P, BLOCK, R0, cs, sn, toWorld, blocks, radiusAt };
+})();
+heightMods.push((h, x, z) => {          // the city sits on a wide flat plateau
+  const d = Math.hypot(x - CITY.C.x, z - CITY.C.z);
+  const w = 1 - smoothstep(440, 820, d);
+  return lerp(h, 18 + noise2(x * 0.008 + 4, z * 0.008) * 1.3, w);
+});
+/* ---- Dwarven highlands: mountain range, mining terraces, factory plateau, fortress ledge ---- */
+const DW = { F: { x: 660, z: -660 }, D0: { x: 700, z: -700 }, HD: 86, GATE: { x: 1010, z: -1010 }, HG: 130 };
+function dwarfMountainMask(x, z) {
+  const dF = Math.hypot(x - DW.F.x, z - DW.F.z);
+  return smoothstep(200, 1000, dF) * smoothstep(40, 700, x) * smoothstep(-40, -700, z) * smoothstep(70, 330, riverDist(x, z));
+}
+heightMods.push((h, x, z) => {                       // the range itself: ridged noise, highest in the NE corner
+  const M = dwarfMountainMask(x, z);
+  if (M <= 0.001) return h;
+  const ridge = ridged(x * 0.0019 + 40, z * 0.0019 - 12, 5), crest = ridged(x * 0.006 - 7, z * 0.006 + 3, 3);
+  return h + Math.pow(M, 1.15) * (170 + ridge * 560 + crest * 100);
+});
+heightMods.push((h, x, z) => {                       // terraced foothills (mining benches)
+  const dF = Math.hypot(x - DW.F.x, z - DW.F.z);
+  const tm = smoothstep(230, 420, dF) * (1 - smoothstep(780, 1000, dF)) * (1 - smoothstep(190, 300, h)) * smoothstep(100, 430, x) * smoothstep(-100, -430, z);
+  if (tm <= 0) return h;
+  const S = 15, t = h / S, f = Math.floor(t), fr = t - f;
+  return lerp(h, (f + smoothstep(0.6, 0.95, fr)) * S, tm * 0.8);
+});
+heightMods.push((h, x, z) => {                       // the flat factory plateau
+  const w = 1 - smoothstep(255, 520, Math.hypot(x - DW.D0.x, z - DW.D0.z));
+  return w > 0 ? lerp(h, DW.HD + noise2(x * 0.02, z * 0.02) * 0.7, w) : h;
+});
+heightMods.push((h, x, z) => {                       // ledge in front of the Great Gate (flat on the SW side only)
+  const dx = x - DW.GATE.x, dz = z - DW.GATE.z, d = Math.hypot(dx, dz);
+  const front = smoothstep(-25, 40, (-dx + dz) * 0.7071);
+  const w = (1 - smoothstep(60, 130, d)) * front;
+  return w > 0 ? lerp(h, DW.HG, w) : h;
+});
+/* ---- Elven forest: soft rolling hills with a central hill for the great-tree city ---- */
+const EC = { x: ZONES.elf.x, z: ZONES.elf.z };
+heightMods.push((h, x, z) => {
+  const reg = smoothstep(-40, -420, x) * smoothstep(-40, -420, z);
+  if (reg <= 0) return h;
+  const d = Math.hypot(x - EC.x, z - EC.z), hill = 1 - smoothstep(60, 430, d);
+  return h + reg * (fbm(x * 0.004 + 3, z * 0.004 - 5, 3) * 26 + hill * hill * 52 + 12);
+});
+/* ---- Orc wastes: terraced mesas and gullies around a flat scrapyard basin ---- */
+const OC = { x: ZONES.orc.x, z: ZONES.orc.z, H: 34 };
+heightMods.push((h, x, z) => {
+  const reg = smoothstep(40, 420, x) * smoothstep(40, 420, z);
+  if (reg <= 0) return h;
+  const d = Math.hypot(x - OC.x, z - OC.z);
+  const rough = ridged(x * 0.0045 + 21, z * 0.0045 - 9, 4);
+  const mesaN = (fbm(x * 0.0035 + 2, z * 0.0035 + 8, 3) * 0.5 + 0.5) * 4.2, st = Math.floor(mesaN);
+  const mesa = (st + smoothstep(0.72, 0.96, mesaN - st)) / 4.2;
+  const hh = h + (rough * 58 + mesa * 74) * smoothstep(250, 480, d) * reg;
+  const yard = 1 - smoothstep(235, 340, d);
+  return yard > 0 ? lerp(hh, OC.H + noise2(x * 0.02, z * 0.02) * 0.8, yard) : hh;
+});
+// @@HEIGHT_MODS
+
+function terrainHeight(x, z) {
+  let h = baseHills(x, z);
+  for (let i = 0; i < heightMods.length; i++) h = heightMods[i](h, x, z);
+  // river valley: flood plain + channel
+  const d = riverDist(x, z);
+  const plain = 1 - smoothstep(RIVER_W * 1.0, RIVER_W * 5.0, d);
+  h = lerp(h, 4.0 + noise2(x * 0.012, z * 0.012) * 1.4, plain);
+  const chan = 1 - smoothstep(RIVER_W * 0.35, RIVER_W * 1.05, d);
+  h = lerp(h, -7, chan);
+  // coast: land sinks into the sea outside the world
+  const ext = Math.max(Math.abs(x), Math.abs(z)) * 0.72 + Math.hypot(x, z) * 0.28 + fbm(x * 0.0026 + 3, z * 0.0026 - 8, 3) * 150;
+  const edge = smoothstep(1330, 1640, ext);
+  h = lerp(h, -42, edge);
+  return h;
+}
+
+/* ======================================================================
+   2. RENDERER, SCENE, GLOBAL SHADER STATE
+   ====================================================================== */
+let renderer;
+try { renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' }); }
+catch (err) { document.getElementById('loading').textContent = 'WebGL is not available in this browser.'; throw err; }
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0xa9c4dc, 0.00030);
+renderer.setClearColor(0xa9c4dc);
+
+const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.8, 9000);
+camera.rotation.order = 'YXZ';
+
+/* Global uniforms shared by every custom / patched material.
+   Colours that feed fog and sky are kept in *display* (sRGB) space. */
+const G = {
+  uTime:     { value: 0 },
+  uNight:    { value: 0 },        // 0 = day, 1 = deep night (smoothed)
+  uDayLight: { value: 1 },        // brightness factor for unlit shaders
+  uSunDir:   { value: new THREE.Vector3(0.3, 0.8, 0.5).normalize() },
+  uMoonDir:  { value: new THREE.Vector3(-0.3, -0.8, -0.5).normalize() },
+  uHorizon:  { value: new THREE.Vector3(0.66, 0.77, 0.87) },
+  uZenith:   { value: new THREE.Vector3(0.20, 0.42, 0.78) },
+  uSunScat:  { value: new THREE.Vector3(0.10, 0.08, 0.04) },
+  uSunCol:   { value: new THREE.Vector3(1.0, 0.95, 0.85) },
+  uCloudIn:  { value: 0 },        // 0..1: how deep the camera is inside a cloud
+  uCloudCol: { value: new THREE.Vector3(0.82, 0.85, 0.9) },
+};
+G.uFogSunDir  = G.uSunDir;   // aliases consumed by the fog chunk
+G.uFogSunScat = G.uSunScat;
+function hookGlobals(shader) { for (const k in G) shader.uniforms[k] = G[k]; return shader; }
+
+/* Fog chunk override: exponential fog whose colour is tinted by the sun
+   direction (aerial perspective / sunset glow) and that matches the sky dome. */
+THREE.ShaderChunk.fog_pars_vertex = `
+#ifdef USE_FOG
+  varying float vFogDepth;
+  varying vec3 vFogDir;
+#endif`;
+THREE.ShaderChunk.fog_vertex = `
+#ifdef USE_FOG
+  vFogDepth = - mvPosition.z;
+  vFogDir = mvPosition.xyz * mat3( viewMatrix );
+#endif`;
+THREE.ShaderChunk.fog_pars_fragment = `
+#ifdef USE_FOG
+  uniform vec3 fogColor;
+  varying float vFogDepth;
+  varying vec3 vFogDir;
+  uniform vec3 uFogSunDir;
+  uniform vec3 uFogSunScat;
+  #ifdef FOG_EXP2
+    uniform float fogDensity;
+  #else
+    uniform float fogNear;
+    uniform float fogFar;
+  #endif
+#endif`;
+THREE.ShaderChunk.fog_fragment = `
+#ifdef USE_FOG
+  #ifdef FOG_EXP2
+    float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+  #else
+    float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+  #endif
+  vec3 fogD = normalize( vFogDir );
+  float fogSd = max( dot( fogD, uFogSunDir ), 0.0 );
+  vec3 fogC = fogColor + uFogSunScat * ( pow( fogSd, 5.0 ) * 0.5 + pow( fogSd, 48.0 ) * 1.2 );
+  gl_FragColor.rgb = mix( gl_FragColor.rgb, fogC, fogFactor );
+#endif`;
+
+const GLSL_NOISE = `
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+  float a = hash12(i), b = hash12(i+vec2(1.,0.)), c = hash12(i+vec2(0.,1.)), d = hash12(i+vec2(1.,1.));
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y); }
+float fbm2(vec2 p){ float s = 0., a = .5; for(int i=0;i<4;i++){ s += a*vnoise(p); p = p*2.03 + 17.1; a *= .5; } return s; }
+`;
+/* Sky colour as seen in direction d (display space). Needs uSunDir/uSunScat declared by the caller. */
+const GLSL_SKY = `
+uniform vec3 uHorizon; uniform vec3 uZenith; uniform vec3 uMoonDir;
+vec3 scatterAt(vec3 d){ float sd = max(dot(d, uFogSunDir), 0.0); return uFogSunScat * (pow(sd,5.0)*0.5 + pow(sd,48.0)*1.2); }
+vec3 skyBase(vec3 d){ float h = clamp(d.y, 0.0, 1.0); return mix(uHorizon, uZenith, pow(h, 0.42)) + scatterAt(d); }
+`;
+
+/* Per-frame callbacks registered by the world modules. */
+const updaters = [];
+
+/* Lights (driven by the day/night module in stage 2) */
+const hemi = new THREE.HemisphereLight(0xbcd6ff, 0x6b5a3c, 2.4);
+scene.add(hemi);
+const sunLight = new THREE.DirectionalLight(0xfff0d8, 3.2);
+sunLight.position.set(300, 800, 500);
+scene.add(sunLight);
+const moonLight = new THREE.DirectionalLight(0x7f96d8, 0.0);
+scene.add(moonLight);
+
+/* ======================================================================
+   3. TERRAIN
+   ====================================================================== */
+const SPLAT_SIZE = 2048;
+const splat = {
+  canvas: document.createElement('canvas'),
+  toPx: (v) => (v + TERRAIN_HALF) / (2 * TERRAIN_HALF) * SPLAT_SIZE,
+  scale: SPLAT_SIZE / (2 * TERRAIN_HALF),   // pixels per world unit
+};
+splat.canvas.width = splat.canvas.height = SPLAT_SIZE;
+splat.ctx = splat.canvas.getContext('2d');
+splat.ctx.clearRect(0, 0, SPLAT_SIZE, SPLAT_SIZE);
+// @@SPLAT_PAINT
+const splatTex = new THREE.CanvasTexture(splat.canvas);
+splatTex.flipY = false;
+splatTex.premultiplyAlpha = false;
+splatTex.wrapS = splatTex.wrapT = THREE.ClampToEdgeWrapping;
+splatTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+splatTex.colorSpace = THREE.SRGBColorSpace;
+splatTex.generateMipmaps = true;
+splatTex.minFilter = THREE.LinearMipmapLinearFilter;
+
+const COL = {
+  grassA: new THREE.Color('#5f8f3d'), grassB: new THREE.Color('#88a244'), grassDark: new THREE.Color('#3f6a2d'),
+  dirt: new THREE.Color('#82704d'), rock: new THREE.Color('#77736b'), sand: new THREE.Color('#b9aa7c'),
+  mud: new THREE.Color('#4f4a3a'), seabed: new THREE.Color('#3b4f4a'),
+};
+const groundMods = [];
+const _dwA = new THREE.Color(), _dwB = new THREE.Color();
+const DWC = { grass: new THREE.Color('#79794f'), rock: new THREE.Color('#706b63'), rockD: new THREE.Color('#524e49'), snow: new THREE.Color('#eceef2'), slag: new THREE.Color('#4a453f') };
+groundMods.push((x, z, h, slope, out) => {          // dwarven highlands colouring
+  const reg = smoothstep(60, 380, x) * smoothstep(-60, -380, z);
+  if (reg <= 0) return;
+  const n = noise2(x * 0.012, z * 0.012) * 0.5 + 0.5;
+  out.lerp(_dwA.copy(DWC.grass).lerp(DWC.rock, n * 0.5), reg * 0.85);
+  const strata = 0.5 + 0.5 * Math.sin(h * 0.3 + noise2(x * 0.01, z * 0.01) * 5);
+  const rockW = Math.max(smoothstep(85, 230, h + n * 40), smoothstep(0.15, 0.4, slope)) * reg;
+  out.lerp(_dwB.copy(DWC.rock).lerp(DWC.rockD, strata * 0.55), rockW);
+  const snowW = smoothstep(320, 410, h + noise2(x * 0.02, z * 0.02) * 50) * (1 - smoothstep(0.34, 0.6, slope)) * reg;
+  out.lerp(DWC.snow, snowW);
+  out.lerp(DWC.slag, (1 - smoothstep(180, 330, Math.hypot(x - DW.D0.x, z - DW.D0.z) + noise2(x * 0.02, z * 0.02) * 40)) * 0.7);
+});
+const ELC = { moss: new THREE.Color('#2f6f3e'), lush: new THREE.Color('#4f9a45'), floor: new THREE.Color('#3a5a34'), flower: new THREE.Color('#8fb44a') };
+groundMods.push((x, z, h, slope, out) => {          // elven forest floor: deep emerald moss
+  const reg = smoothstep(-40, -380, x) * smoothstep(-40, -380, z);
+  if (reg <= 0) return;
+  const n = noise2(x * 0.015 + 9, z * 0.015) * 0.5 + 0.5, d = Math.hypot(x - EC.x, z - EC.z);
+  out.lerp(_dwA.copy(ELC.moss).lerp(ELC.lush, n), reg * 0.9);
+  out.lerp(ELC.floor, reg * (1 - smoothstep(120, 620, d)) * 0.35);
+  if (noise2(x * 0.03 - 4, z * 0.03 + 2) > 0.45) out.lerp(ELC.flower, reg * 0.35);
+});
+const ORCC = { dirt: new THREE.Color('#8f5c3a'), dirt2: new THREE.Color('#a56c40'), ash: new THREE.Color('#625850'), oil: new THREE.Color('#2e2723'), rock: new THREE.Color('#7e5c48') };
+groundMods.push((x, z, h, slope, out) => {          // orc wastes: rust, ash and oil
+  const reg = smoothstep(40, 380, x) * smoothstep(40, 380, z);
+  if (reg <= 0) return;
+  const n = noise2(x * 0.012 + 3, z * 0.012 - 7) * 0.5 + 0.5, n2 = noise2(x * 0.035, z * 0.035 + 5);
+  out.lerp(_dwA.copy(ORCC.dirt).lerp(ORCC.dirt2, n), reg * 0.93);
+  if (n2 > 0.25) out.lerp(ORCC.ash, reg * smoothstep(0.25, 0.7, n2) * 0.7);
+  out.lerp(ORCC.rock, reg * smoothstep(0.12, 0.35, slope) * 0.6);
+  const d = Math.hypot(x - OC.x, z - OC.z);
+  out.lerp(ORCC.oil, reg * (1 - smoothstep(60, 280, d)) * 0.28);
+});
+// @@GROUND_COLOR_MODS
+
+function groundColor(x, z, h, slope, out) {
+  const n = fbm(x * 0.004 + 7, z * 0.004 - 3, 3) * 0.5 + 0.5;
+  out.copy(COL.grassA).lerp(COL.grassB, n);
+  out.lerp(COL.grassDark, (noise2(x * 0.03, z * 0.03) * 0.5 + 0.5) * 0.28);
+  for (let i = 0; i < groundMods.length; i++) groundMods[i](x, z, h, slope, out);
+  out.lerp(COL.rock, smoothstep(0.2, 0.46, slope));
+  const rd = riverDist(x, z);
+  if (h < 5.5 && rd < RIVER_W * 2.2) out.lerp(COL.sand, (1 - smoothstep(RIVER_W * 0.7, RIVER_W * 1.7, rd)) * smoothstep(5.5, 1.0, h));
+  out.lerp(COL.seabed, smoothstep(0.4, -3, h));
+  return out;
+}
+
+const terrain = (() => {
+  const N = GRID_N, stride = N + 1, step = (2 * TERRAIN_HALF) / N;
+  const pos = new Float32Array(stride * stride * 3);
+  const col = new Float32Array(stride * stride * 3);
+  const Hs = new Float32Array(stride * stride);
+  for (let j = 0; j <= N; j++) {
+    for (let i = 0; i <= N; i++) {
+      const x = -TERRAIN_HALF + i * step, z = -TERRAIN_HALF + j * step;
+      const h = terrainHeight(x, z);
+      const k = j * stride + i;
+      Hs[k] = h; pos[k * 3] = x; pos[k * 3 + 1] = h; pos[k * 3 + 2] = z;
+    }
+  }
+  const idx = new Uint32Array(N * N * 6);
+  let p = 0;
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * stride + i, b = a + 1, c = a + stride, d = c + 1;
+    idx[p++] = a; idx[p++] = c; idx[p++] = b; idx[p++] = b; idx[p++] = c; idx[p++] = d;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.computeVertexNormals();
+  const nrm = geo.attributes.normal.array;
+  const c = new THREE.Color();
+  for (let k = 0; k < stride * stride; k++) {
+    groundColor(pos[k * 3], pos[k * 3 + 2], Hs[k], 1 - nrm[k * 3 + 1], c);
+    col[k * 3] = c.r; col[k * 3 + 1] = c.g; col[k * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.computeBoundingSphere();
+
+  const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
+  mat.onBeforeCompile = (sh) => {
+    hookGlobals(sh);
+    sh.uniforms.tSplat = { value: splatTex };
+    sh.uniforms.uSplatHalf = { value: TERRAIN_HALF };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWP;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvWP = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vWP;\nuniform sampler2D tSplat; uniform float uSplatHalf;\n' + GLSL_NOISE)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          float dist = length(vWP - cameraPosition);
+          vec2 q = vWP.xz;
+          float d1 = vnoise(q * 0.31), d2 = vnoise(q * 1.7 + 5.0), d3 = vnoise(q * 7.3 + 11.0);
+          float f2 = 1.0 - smoothstep(250.0, 900.0, dist);
+          float f3 = 1.0 - smoothstep(60.0, 320.0, dist);
+          float detail = 0.84 + 0.22 * d1 + 0.14 * f2 * (d2 - 0.5) + 0.10 * f3 * (d3 - 0.5);
+          diffuseColor.rgb *= detail;
+          vec2 suv = (vWP.xz + uSplatHalf) / (2.0 * uSplatHalf);
+          vec4 sp = texture2D(tSplat, suv);
+          diffuseColor.rgb = mix(diffuseColor.rgb, sp.rgb * (0.9 + 0.2 * d2), sp.a);
+        }`);
+  };
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return { mesh, Hs, N, stride, step };
+})();
+
+/* ======================================================================
+   4. WATER  (rivers + sea; same grid as terrain so shorelines match exactly)
+   ====================================================================== */
+function riverFlow(x, z) {
+  const dN = Math.abs(x - riverNSx(z)), dE = Math.abs(z - riverEWz(x));
+  const wN = 1 - smoothstep(RIVER_W * 1.2, RIVER_W * 3.2, dN);
+  const wE = 1 - smoothstep(RIVER_W * 1.2, RIVER_W * 3.2, dE);
+  let fx = 0, fz = 0;
+  { const l = Math.hypot(riverNSdx(z), 1); fx += riverNSdx(z) / l * wN; fz += 1 / l * wN; }
+  { const l = Math.hypot(1, riverEWdz(x)); fx += 1 / l * wE; fz += riverEWdz(x) / l * wE; }
+  return [fx, fz];
+}
+
+function makeWaterNormalTexture() {
+  const S = 256, data = new Uint8Array(S * S * 4);
+  const wr = mulberry32(777), waves = [];
+  for (let i = 0; i < 28; i++) {
+    const fx = Math.floor(rr2(wr, 1, 14)) * (wr() < 0.5 ? -1 : 1), fy = Math.floor(rr2(wr, 1, 14));
+    const f = Math.hypot(fx, fy) || 1;
+    waves.push({ fx, fy, ph: wr() * TAU, a: 1 / Math.pow(f, 0.9) });
+  }
+  function rr2(r, a, b) { return a + (b - a) * r(); }
+  let maxS = 0; const sl = new Float32Array(S * S * 2);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const u = x / S, v = y / S; let gx = 0, gy = 0;
+    for (const w of waves) { const c = Math.cos(TAU * (w.fx * u + w.fy * v) + w.ph) * w.a * TAU; gx += c * w.fx; gy += c * w.fy; }
+    sl[(y * S + x) * 2] = gx; sl[(y * S + x) * 2 + 1] = gy; maxS = Math.max(maxS, Math.abs(gx), Math.abs(gy));
+  }
+  for (let i = 0; i < S * S; i++) {
+    data[i * 4] = Math.round((sl[i * 2] / maxS * 0.5 + 0.5) * 255);
+    data[i * 4 + 1] = Math.round((sl[i * 2 + 1] / maxS * 0.5 + 0.5) * 255);
+    data[i * 4 + 2] = 128; data[i * 4 + 3] = 255;
+  }
+  const t = new THREE.DataTexture(data, S, S, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); t.needsUpdate = true;
+  return t;
+}
+
+const water = (() => {
+  const { Hs, N, stride, step } = terrain;
+  const use = new Int32Array(stride * stride).fill(-1);
+  const pos = [], dep = [], flw = [], idx = [];
+  const addV = (v) => {
+    if (use[v] >= 0) return use[v];
+    const x = -TERRAIN_HALF + (v % stride) * step, z = -TERRAIN_HALF + Math.floor(v / stride) * step;
+    const f = riverFlow(x, z);
+    use[v] = pos.length / 3; pos.push(x, 0, z); dep.push(-Hs[v]); flw.push(f[0], f[1]);
+    return use[v];
+  };
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * stride + i, b = a + 1, c = a + stride, d = c + 1;
+    if (Math.min(Hs[a], Hs[b], Hs[c], Hs[d]) > 1.0) continue;
+    const ia = addV(a), ib = addV(b), ic = addV(c), id = addV(d);
+    idx.push(ia, ic, ib, ib, ic, id);
+  }
+  // far sea: four rectangles around the terrain square
+  const R = 9000, T = TERRAIN_HALF;
+  const rects = [[-R, -R, R, -T], [-R, T, R, R], [-R, -T, -T, T], [T, -T, R, T]];
+  for (const [x0, z0, x1, z1] of rects) {
+    const base = pos.length / 3;
+    pos.push(x0, 0, z0, x1, 0, z0, x0, 0, z1, x1, 0, z1);
+    for (let k = 0; k < 4; k++) { dep.push(60); flw.push(0, 0); }
+    idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('aDepth', new THREE.Float32BufferAttribute(dep, 1));
+  geo.setAttribute('aFlow', new THREE.Float32BufferAttribute(flw, 2));
+  geo.setIndex(idx);
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 20000);
+
+  const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { tNormal: { value: makeWaterNormalTexture() } }]);
+  for (const k in G) uniforms[k] = G[k];
+  const mat = new THREE.ShaderMaterial({
+    uniforms, fog: true, transparent: true, depthWrite: false,
+    vertexShader: `
+      attribute float aDepth; attribute vec2 aFlow;
+      varying vec3 vWorld; varying float vDepth; varying vec2 vFlow;
+      #include <fog_pars_vertex>
+      void main(){
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorld = wp.xyz; vDepth = aDepth; vFlow = aFlow;
+        vec4 mvPosition = viewMatrix * wp;
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: `
+      uniform sampler2D tNormal; uniform float uTime; uniform float uDayLight; uniform float uNight; uniform vec3 uSunCol;
+      varying vec3 vWorld; varying float vDepth; varying vec2 vFlow;
+      #include <fog_pars_fragment>
+      ${GLSL_SKY}
+      ${GLSL_NOISE}
+      void main(){
+        vec3 V = normalize(cameraPosition - vWorld);
+        float dist = length(cameraPosition - vWorld);
+        vec2 uv = vWorld.xz * 0.05;
+        float ph0 = fract(uTime * 0.22), ph1 = fract(uTime * 0.22 + 0.5);
+        float w0 = 1.0 - abs(1.0 - 2.0 * ph0);
+        vec2 fl = vFlow * 0.55;
+        vec2 s0 = texture2D(tNormal, uv - fl * ph0 + vec2(uTime * 0.004, uTime * 0.003)).rg;
+        vec2 s1 = texture2D(tNormal, uv - fl * ph1 + vec2(0.37, 0.61) + vec2(uTime * 0.004, uTime * 0.003)).rg;
+        vec2 s2 = texture2D(tNormal, uv * 2.7 - fl * 1.6 * ph0 - vec2(uTime * 0.006, 0.0)).rg;
+        vec2 s3 = texture2D(tNormal, uv * 2.7 - fl * 1.6 * ph1 + vec2(0.5) - vec2(uTime * 0.006, 0.0)).rg;
+        vec2 sl = (mix(s1, s0, w0) + 0.6 * mix(s3, s2, w0) - 1.6 * 0.5) * 2.0;
+        float strength = 0.55 * exp(-dist * 0.0009);
+        vec3 N = normalize(vec3(-sl.x * strength, 1.0, -sl.y * strength));
+        vec3 R = reflect(-V, N); R.y = abs(R.y);
+        vec3 refl = skyBase(R);
+        float fres = 0.03 + 0.97 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+        float depthT = 1.0 - exp(-max(vDepth, 0.0) * 0.30);
+        vec3 shallowC = vec3(0.10, 0.34, 0.33), deepC = vec3(0.025, 0.12, 0.19);
+        vec3 body = mix(shallowC, deepC, depthT) * (0.25 + 0.75 * uDayLight);
+        vec3 col = mix(body, refl, clamp(fres, 0.0, 1.0));
+        // sun / moon glints
+        float sg = pow(max(dot(R, uFogSunDir), 0.0), 350.0) + 0.25 * pow(max(dot(R, uFogSunDir), 0.0), 40.0);
+        col += uSunCol * sg * 2.2 * smoothstep(-0.05, 0.1, uFogSunDir.y);
+        float mg = pow(max(dot(R, uMoonDir), 0.0), 500.0);
+        col += vec3(0.55, 0.65, 0.9) * mg * 1.4 * uNight * smoothstep(-0.05, 0.1, uMoonDir.y);
+        // shore foam
+        float edge = 1.0 - smoothstep(0.0, 1.1, vDepth);
+        float fn = vnoise(vWorld.xz * 0.35 + fl * uTime * 0.6) * 0.6 + vnoise(vWorld.xz * 1.3 - fl * uTime) * 0.4;
+        float foam = clamp(edge * (0.35 + fn * 1.1) - 0.15, 0.0, 1.0) * (1.0 - smoothstep(0.0, 0.05, -vDepth));
+        col = mix(col, vec3(0.92, 0.95, 0.96) * (0.25 + 0.75 * uDayLight), foam * 0.75);
+        float alpha = smoothstep(0.0, 0.6, vDepth) * mix(0.80 + 0.2 * fres, 1.0, smoothstep(2.0, 9.0, vDepth));
+        alpha = max(alpha, foam * 0.8);
+        gl_FragColor = vec4(col, alpha);
+        #include <fog_fragment>
+      }`,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 2;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return { mesh, mat };
+})();
+
+/* ======================================================================
+   5. FREE-FLIGHT CAMERA
+   ====================================================================== */
+const flight = {
+  yaw: 0.0, pitch: -0.18, speed: 110, boost: 5,
+  vel: new THREE.Vector3(), keys: Object.create(null), locked: false, dragging: false,
+};
+camera.position.set(-40, 260, 340);
+flight.pitch = -0.2;
+const canvasEl = renderer.domElement;
+canvasEl.tabIndex = 0;
+
+addEventListener('keydown', (e) => {
+  if (e.target && e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  flight.keys[e.code] = true;
+  if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'Space', 'ShiftLeft'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', (e) => { flight.keys[e.code] = false; });
+addEventListener('blur', () => { for (const k in flight.keys) flight.keys[k] = false; });
+canvasEl.addEventListener('mousedown', () => {
+  flight.dragging = true;
+  try { const r = canvasEl.requestPointerLock && canvasEl.requestPointerLock(); if (r && r.catch) r.catch(() => {}); } catch (_) {}
+});
+addEventListener('mouseup', () => { flight.dragging = false; });
+document.addEventListener('pointerlockchange', () => { flight.locked = document.pointerLockElement === canvasEl; });
+addEventListener('mousemove', (e) => {
+  if (!flight.locked && !flight.dragging) return;
+  flight.yaw -= e.movementX * 0.0022;
+  flight.pitch = clamp(flight.pitch - e.movementY * 0.0022, -1.55, 1.55);
+});
+addEventListener('wheel', (e) => {
+  if (e.target !== canvasEl) return;
+  flight.speed = clamp(flight.speed * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 15, 700);
+}, { passive: true });
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _tv = new THREE.Vector3();
+function updateCamera(dt) {
+  const k = flight.keys;
+  camera.rotation.set(flight.pitch, flight.yaw, 0);
+  camera.getWorldDirection(_fwd);
+  _right.crossVectors(_fwd, camera.up).normalize();
+  _tv.set(0, 0, 0);
+  if (k.KeyW) _tv.add(_fwd);
+  if (k.KeyS) _tv.sub(_fwd);
+  if (k.KeyD) _tv.add(_right);
+  if (k.KeyA) _tv.sub(_right);
+  if (k.KeyE || k.Space) _tv.y += 1;
+  if (k.KeyQ) _tv.y -= 1;
+  if (_tv.lengthSq() > 0) _tv.normalize();
+  const sp = flight.speed * ((k.ShiftLeft || k.ShiftRight) ? flight.boost : 1);
+  _tv.multiplyScalar(sp);
+  flight.vel.lerp(_tv, 1 - Math.exp(-7 * dt));
+  camera.position.addScaledVector(flight.vel, dt);
+  // keep inside the world and above ground
+  camera.position.x = clamp(camera.position.x, -2400, 2400);
+  camera.position.z = clamp(camera.position.z, -2400, 2400);
+  camera.position.y = clamp(camera.position.y, 3, 2600);
+  const gh = Math.max(terrainHeight(camera.position.x, camera.position.z), 0) + 3;
+  if (camera.position.y < gh) camera.position.y = gh;
+}
+
+/* ======================================================================
+   6. WORLD OBJECTS (added by stage modules)
+   ====================================================================== */
+/* ======================================================================
+   6a. SKY DOME  (gradient, sun, moon with phase, stars, milky way)
+   ====================================================================== */
+const skyDome = (() => {
+  const uniforms = { uStarRot: { value: new THREE.Matrix3() } };
+  for (const k in G) uniforms[k] = G[k];
+  const mat = new THREE.ShaderMaterial({
+    uniforms, side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false,
+    vertexShader: `
+      varying vec3 vDir;
+      void main(){
+        vDir = position;
+        vec4 p = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
+        gl_Position = p;
+      }`,
+    fragmentShader: `
+      uniform vec3 uFogSunDir; uniform vec3 uFogSunScat; uniform vec3 uSunCol;
+      uniform float uNight; uniform float uTime; uniform mat3 uStarRot;
+      uniform float uCloudIn; uniform vec3 uCloudCol;
+      varying vec3 vDir;
+      ${GLSL_SKY}
+      ${GLSL_NOISE}
+      float h13(vec3 p){ p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
+      vec3 starLayer(vec3 d, float scale, float density, float size){
+        vec3 p = d * scale; vec3 ip = floor(p); vec3 fp = p - ip;
+        float h = h13(ip);
+        if (h > density) return vec3(0.0);
+        vec3 sp = 0.2 + 0.6 * vec3(h13(ip + 17.1), h13(ip + 43.7), h13(ip + 91.3));
+        float dd = length(fp - sp);
+        float b = smoothstep(size, 0.0, dd) * (0.35 + 0.65 * h13(ip + 5.5));
+        vec3 tint = mix(vec3(0.70, 0.82, 1.0), vec3(1.0, 0.86, 0.66), h13(ip + 9.9));
+        float tw = 0.78 + 0.22 * sin(uTime * (1.5 + h * 20.0) + h * 400.0);
+        return tint * b * tw;
+      }
+      void main(){
+        vec3 d = normalize(vDir);
+        vec3 col = skyBase(d);
+        float horizonFade = smoothstep(-0.02, 0.18, d.y);
+
+        // ---- stars + milky way (night only) ----
+        if (uNight > 0.01) {
+          vec3 sd = uStarRot * d;
+          vec3 st = starLayer(sd, 62.0, 0.050, 0.15) * 2.0 + starLayer(sd, 135.0, 0.07, 0.24) * 1.4 + starLayer(sd, 28.0, 0.014, 0.12) * 2.8;
+          vec3 galN = normalize(vec3(0.35, 0.80, 0.50));
+          float gl = dot(sd, galN);
+          float band = exp(-gl * gl * 16.0);
+          float dust = fbm2(sd.xy * 7.0 + sd.z * 5.0) * 0.9 + 0.1;
+          float cloudy = smoothstep(0.35, 0.8, fbm2(sd.zx * 12.0 + 3.0));
+          vec3 mw = vec3(0.42, 0.46, 0.70) * band * dust * (1.0 - 0.55 * cloudy) * 0.42;
+          mw += vec3(0.9, 0.7, 0.55) * pow(band, 6.0) * dust * 0.10;
+          col += (st + mw) * uNight * horizonFade;
+        }
+
+        // ---- sun ----
+        float sdot = dot(d, uFogSunDir);
+        float sunVis = smoothstep(-0.02, 0.012, d.y);
+        float disc = smoothstep(0.99962, 0.99978, sdot);
+        col += uSunCol * (disc * 4.0 + pow(max(sdot, 0.0), 700.0) * 1.1 + pow(max(sdot, 0.0), 90.0) * 0.18) * sunVis;
+
+        // ---- moon (with phase and surface) ----
+        float md = dot(d, uMoonDir);
+        float moonVis = smoothstep(-0.03, 0.02, d.y);
+        col += vec3(0.50, 0.58, 0.85) * (pow(max(md, 0.0), 220.0) * 0.30 + pow(max(md, 0.0), 24.0) * 0.07) * moonVis * (0.35 + 0.65 * uNight);
+        if (md > 0.97 && moonVis > 0.0) {
+          vec3 mr = normalize(cross(uMoonDir, vec3(0.0, 1.0, 0.0)));
+          vec3 mu = cross(mr, uMoonDir);
+          vec2 mp = vec2(dot(d, mr), dot(d, mu)) / 0.046;
+          float r2 = dot(mp, mp);
+          if (r2 < 1.0) {
+            vec3 n = vec3(mp, sqrt(1.0 - r2));
+            vec3 L = vec3(dot(uFogSunDir, mr), dot(uFogSunDir, mu), dot(uFogSunDir, -uMoonDir));
+            float lit = smoothstep(-0.04, 0.12, dot(n, L));
+            float maria = smoothstep(0.38, 0.62, fbm2(n.xy * 3.2 + 4.7));
+            float crat = vnoise(n.xy * 17.0) * 0.5 + vnoise(n.xy * 41.0) * 0.5;
+            float alb = mix(0.55, 0.98, maria) * (0.82 + 0.3 * crat);
+            vec3 mc = vec3(0.92, 0.93, 1.0) * alb * (lit * 1.05 + 0.035);
+            float edge = smoothstep(1.0, 0.94, sqrt(r2));
+            col = mix(col, mc, edge * moonVis * (0.12 + 0.88 * uNight));
+          }
+        }
+        col = mix(col, uCloudCol, uCloudIn);          // inside a cloud the whole sky turns to mist
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  });
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(4500, 48, 24), mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = -100;
+  scene.add(mesh);
+  return { mesh, mat, uniforms };
+})();
+
+/* ======================================================================
+   6b. TIME OF DAY  (sun / moon paths, palette, lights, UI)
+   ====================================================================== */
+const TIME = { hours: 9.0, speed: 1, paused: false, rate: 0.05, scrubbing: false };   // rate: game hours per real second at x1
+const SPEEDS = [1, 4, 16, 64];
+
+// keyframes by sun elevation: [sin(elevation), zenith, horizon(=fog), sun scatter]  (display-space sRGB)
+const SKY_KEYS = [
+  [-0.32, [0.010, 0.017, 0.050], [0.030, 0.048, 0.100], [0.00, 0.00, 0.00]],
+  [-0.15, [0.030, 0.045, 0.130], [0.095, 0.095, 0.210], [0.10, 0.04, 0.07]],
+  [-0.05, [0.100, 0.140, 0.380], [0.560, 0.340, 0.340], [0.50, 0.26, 0.13]],
+  [ 0.03, [0.170, 0.300, 0.620], [0.880, 0.580, 0.420], [0.75, 0.42, 0.18]],
+  [ 0.13, [0.200, 0.400, 0.740], [0.760, 0.730, 0.740], [0.40, 0.28, 0.12]],
+  [ 0.38, [0.170, 0.400, 0.800], [0.660, 0.780, 0.900], [0.16, 0.12, 0.05]],
+  [ 1.00, [0.140, 0.360, 0.780], [0.660, 0.780, 0.900], [0.12, 0.10, 0.04]],
+];
+const _zen = [0, 0, 0], _hor = [0, 0, 0], _sca = [0, 0, 0];
+function sampleSkyKeys(s) {
+  let i = 0;
+  while (i < SKY_KEYS.length - 2 && s > SKY_KEYS[i + 1][0]) i++;
+  const a = SKY_KEYS[i], b = SKY_KEYS[i + 1];
+  const t = smoothstep(a[0], b[0], s);
+  for (let k = 0; k < 3; k++) { _zen[k] = lerp(a[1][k], b[1][k], t); _hor[k] = lerp(a[2][k], b[2][k], t); _sca[k] = lerp(a[3][k], b[3][k], t); }
+}
+const sunState = { dir: G.uSunDir.value, moon: G.uMoonDir.value, elev: 0.8, dayK: 1, dusk: 0, fogDensity: 0.0003, fogCol: new THREE.Color() };
+const _starAxis = new THREE.Vector3(0, -0.32, 1).normalize();
+const _m4 = new THREE.Matrix4();
+const _hemiS = new THREE.Color(), _hemiG = new THREE.Color();
+
+function applyTimeOfDay(h) {
+  const a = (h - 6) / 24 * TAU;
+  sunState.dir.set(Math.cos(a), Math.sin(a), 0.32 * Math.sin(a)).normalize();
+  const am = a + Math.PI + 0.55;
+  sunState.moon.set(Math.cos(am), Math.sin(am), -0.30 * Math.sin(am) + 0.1).normalize();
+  const s = sunState.dir.y;
+  sunState.elev = s;
+  sampleSkyKeys(s);
+  const dayK = smoothstep(-0.12, 0.25, s);
+  const dusk = Math.exp(-Math.pow((s - 0.0) / 0.16, 2));
+  sunState.dayK = dayK; sunState.dusk = dusk;
+  const night = 1 - smoothstep(-0.20, 0.0, s);
+  G.uNight.value = night;
+  G.uDayLight.value = lerp(0.10, 1.0, smoothstep(-0.14, 0.22, s));
+  G.uZenith.value.set(_zen[0], _zen[1], _zen[2]);
+  G.uHorizon.value.set(_hor[0], _hor[1], _hor[2]);
+  G.uSunScat.value.set(_sca[0], _sca[1], _sca[2]);
+  G.uSunCol.value.set(1.0, lerp(0.62, 0.96, smoothstep(0.0, 0.4, s)), lerp(0.35, 0.88, smoothstep(0.0, 0.45, s)));
+  scene.fog.color.setRGB(_hor[0], _hor[1], _hor[2], THREE.SRGBColorSpace);
+  scene.fog.density = 0.00038 + 0.00012 * night + 0.00005 * dusk;
+  sunState.fogDensity = scene.fog.density; sunState.fogCol.copy(scene.fog.color);   // clouds re-blend these every frame
+
+  // lights
+  sunLight.position.copy(sunState.dir).multiplyScalar(1000);
+  sunLight.intensity = 3.5 * smoothstep(-0.04, 0.16, s);
+  sunLight.color.setRGB(1.0, lerp(0.56, 0.95, smoothstep(0.0, 0.45, s)), lerp(0.28, 0.86, smoothstep(0.0, 0.5, s)), THREE.SRGBColorSpace);
+  moonLight.position.copy(sunState.moon).multiplyScalar(1000);
+  moonLight.intensity = 1.25 * smoothstep(-0.06, 0.18, sunState.moon.y) * (1 - dayK);
+  const hk = smoothstep(-0.20, 0.12, s);
+  hemi.color.setRGB(lerp(0.17, 0.66, hk) + dusk * 0.22, lerp(0.24, 0.78, hk) + dusk * 0.06, lerp(0.50, 1.0, hk), THREE.SRGBColorSpace);
+  hemi.groundColor.setRGB(lerp(0.05, 0.42, hk) + dusk * 0.10, lerp(0.05, 0.36, hk) + dusk * 0.03, lerp(0.09, 0.24, hk), THREE.SRGBColorSpace);
+  hemi.intensity = lerp(1.45, 2.4, hk);
+  renderer.toneMappingExposure = lerp(1.0, 1.15, night);
+
+  // stars follow the celestial sphere
+  _m4.makeRotationAxis(_starAxis, -a);
+  skyDome.uniforms.uStarRot.value.setFromMatrix4(_m4);
+}
+
+// --- UI
+const ui = {
+  slider: document.getElementById('timeSlider'), clock: document.getElementById('clock'),
+  phase: document.getElementById('phase'), pause: document.getElementById('btnPause'), speed: document.getElementById('btnSpeed'),
+};
+function fmtClock(h) { const hh = Math.floor(h) % 24, mm = Math.floor((h - Math.floor(h)) * 60); return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0'); }
+function phaseName() {
+  const s = sunState.elev, rising = TIME.hours < 12;
+  if (s > 0.12) return 'Day'; if (s > -0.10) return rising ? 'Dawn' : 'Dusk'; return 'Night';
+}
+function refreshTimeUi() {
+  ui.clock.textContent = fmtClock(TIME.hours);
+  ui.phase.textContent = phaseName();
+  if (!TIME.scrubbing) ui.slider.value = TIME.hours;
+}
+function setTime(h) { TIME.hours = ((h % 24) + 24) % 24; applyTimeOfDay(TIME.hours); refreshTimeUi(); }
+ui.slider.addEventListener('pointerdown', () => { TIME.scrubbing = true; });
+addEventListener('pointerup', () => { TIME.scrubbing = false; ui.slider.blur(); });
+ui.slider.addEventListener('input', () => setTime(parseFloat(ui.slider.value)));
+ui.pause.addEventListener('click', () => { TIME.paused = !TIME.paused; ui.pause.textContent = TIME.paused ? '▶' : '⏸'; ui.pause.classList.toggle('on', TIME.paused); ui.pause.blur(); });
+ui.speed.addEventListener('click', () => {
+  TIME.speed = SPEEDS[(SPEEDS.indexOf(TIME.speed) + 1) % SPEEDS.length];
+  ui.speed.textContent = '⏩ Speed ×' + TIME.speed; ui.speed.classList.toggle('on', TIME.speed > 1); ui.speed.blur();
+});
+updaters.push((dt) => {
+  skyDome.mesh.position.copy(camera.position);
+  if (!TIME.paused && !TIME.scrubbing) setTime(TIME.hours + dt * TIME.rate * TIME.speed);
+});
+applyTimeOfDay(TIME.hours); refreshTimeUi();
+
+/* ======================================================================
+   6c. LIBRARY: procedural geometry builder, instancing batches,
+       the shared "structure" shader, smoke and glow particle systems
+   ====================================================================== */
+G.uWind  = { value: new THREE.Vector3(7, 0, 3) };     // world wind (units / s) -- smoke, clouds
+G.uClock = { value: 9 };                              // game hours, used by clock faces
+const finalizers = [];                                // build() callbacks run once after the world is described
+
+const _c3 = new THREE.Color(), colCache = new Map();
+function rgbOf(c) {
+  if (Array.isArray(c)) return c;
+  let k = colCache.get(c);
+  if (!k) { _c3.set(c); k = [_c3.r, _c3.g, _c3.b]; colCache.set(c, k); }
+  return k;
+}
+const _gm = new THREE.Matrix4(), _gq = new THREE.Quaternion(), _ge = new THREE.Euler(), _gv = new THREE.Vector3(), _gs = new THREE.Vector3(), _gn = new THREE.Matrix3(), _gp = new THREE.Vector3();
+
+/* Convex mesh from triangles; winding is fixed automatically so normals point away from (cx,cy,cz). */
+function convexGeo(tris, cx, cy, cz) {
+  const pos = [];
+  for (const t of tris) {
+    let [a, b, c] = t;
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const mx = (a[0] + b[0] + c[0]) / 3 - cx, my = (a[1] + b[1] + c[1]) / 3 - cy, mz = (a[2] + b[2] + c[2]) / 3 - cz;
+    if (nx * mx + ny * my + nz * mz < 0) { const tmp = b; b = c; c = tmp; }
+    pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+function gableGeo(w, d, rh) {      // ridge along X, base at y=0
+  const hw = w / 2, hd = d / 2;
+  const A = [-hw, 0, hd], B = [hw, 0, hd], C = [hw, 0, -hd], D = [-hw, 0, -hd], R1 = [-hw, rh, 0], R2 = [hw, rh, 0];
+  return convexGeo([[A, B, R2], [A, R2, R1], [C, D, R1], [C, R1, R2], [D, A, R1], [B, C, R2]], 0, rh * 0.3, 0);
+}
+function frustumGeo(bw, bd, tw, td, h) {   // rectangular frustum, base at y=0
+  const b = [[-bw / 2, 0, -bd / 2], [bw / 2, 0, -bd / 2], [bw / 2, 0, bd / 2], [-bw / 2, 0, bd / 2]];
+  const t = [[-tw / 2, h, -td / 2], [tw / 2, h, -td / 2], [tw / 2, h, td / 2], [-tw / 2, h, td / 2]];
+  const tris = [[t[0], t[1], t[2]], [t[0], t[2], t[3]]];
+  for (let i = 0; i < 4; i++) { const j = (i + 1) % 4; tris.push([b[i], b[j], t[j]], [b[i], t[j], t[i]]); }
+  return convexGeo(tris, 0, h / 2, 0);
+}
+const GEO = { box: new THREE.BoxGeometry(1, 1, 1) };
+
+/* GB: accumulates primitives (with baked transform, vertex colour, kind and optional vertical AO gradient) */
+class GB {
+  constructor() { this.p = []; this.n = []; this.c = []; this.k = []; }
+  addGeo(g, o = {}) {
+    const src = g.index ? g.toNonIndexed() : g;
+    const P = src.attributes.position, N = src.attributes.normal, cnt = P.count;
+    _gm.compose(_gv.set(o.x || 0, o.y || 0, o.z || 0), _gq.setFromEuler(_ge.set(o.rx || 0, o.ry || 0, o.rz || 0, 'YXZ')), _gs.set(o.sx ?? 1, o.sy ?? 1, o.sz ?? 1));
+    _gn.getNormalMatrix(_gm);
+    const rgb = rgbOf(o.color ?? 0xffffff), kind = o.kind || 0;
+    const g0 = o.grad ? o.grad[0] : 1, g1 = o.grad ? o.grad[1] : 1;
+    const tmp = new Float32Array(cnt * 3);
+    let minY = 1e9, maxY = -1e9;
+    for (let i = 0; i < cnt; i++) {
+      _gp.fromBufferAttribute(P, i).applyMatrix4(_gm);
+      tmp[i * 3] = _gp.x; tmp[i * 3 + 1] = _gp.y; tmp[i * 3 + 2] = _gp.z;
+      if (_gp.y < minY) minY = _gp.y; if (_gp.y > maxY) maxY = _gp.y;
+    }
+    const span = Math.max(maxY - minY, 1e-4);
+    for (let i = 0; i < cnt; i++) {
+      this.p.push(tmp[i * 3], tmp[i * 3 + 1], tmp[i * 3 + 2]);
+      _gp.fromBufferAttribute(N, i).applyMatrix3(_gn).normalize();
+      this.n.push(_gp.x, _gp.y, _gp.z);
+      const gr = lerp(g0, g1, (tmp[i * 3 + 1] - minY) / span);
+      this.c.push(rgb[0] * gr, rgb[1] * gr, rgb[2] * gr);
+      this.k.push(kind);
+    }
+    if (src !== g) src.dispose();
+    return this;
+  }
+  addGB(o2, o = {}) {      // merge another builder with an extra transform
+    _gm.compose(_gv.set(o.x || 0, o.y || 0, o.z || 0), _gq.setFromEuler(_ge.set(o.rx || 0, o.ry || 0, o.rz || 0, 'YXZ')), _gs.set(o.sx ?? 1, o.sy ?? o.sx ?? 1, o.sz ?? o.sx ?? 1));
+    _gn.getNormalMatrix(_gm);
+    for (let i = 0; i < o2.p.length; i += 3) {
+      _gp.set(o2.p[i], o2.p[i + 1], o2.p[i + 2]).applyMatrix4(_gm); this.p.push(_gp.x, _gp.y, _gp.z);
+      _gp.set(o2.n[i], o2.n[i + 1], o2.n[i + 2]).applyMatrix3(_gn).normalize(); this.n.push(_gp.x, _gp.y, _gp.z);
+      this.c.push(o2.c[i], o2.c[i + 1], o2.c[i + 2]);
+    }
+    for (let i = 0; i < o2.k.length; i++) this.k.push(o2.k[i]);
+    return this;
+  }
+  // y is the BOTTOM of the primitive (except sphere/ico/torus which are centred)
+  box(sx, sy, sz, x, y, z, color, kind = 0, o = {}) { return this.addGeo(GEO.box, { ...o, x, y: y + sy / 2, z, sx, sy, sz, color, kind }); }
+  cyl(rt, rb, h, seg, x, y, z, color, kind = 0, o = {}) { return this.addGeo(new THREE.CylinderGeometry(rt, rb, h, seg, 1), { ...o, x, y: y + h / 2, z, color, kind }); }
+  cone(r, h, seg, x, y, z, color, kind = 0, o = {}) { return this.addGeo(new THREE.ConeGeometry(r, h, seg, 1), { ...o, x, y: y + h / 2, z, color, kind }); }
+  sphere(r, x, y, z, color, kind = 0, o = {}) { return this.addGeo(new THREE.SphereGeometry(r, 8, 6), { ...o, x, y, z, color, kind }); }
+  ico(r, x, y, z, color, kind = 0, o = {}, detail = 1) { return this.addGeo(new THREE.IcosahedronGeometry(r, detail), { ...o, x, y, z, color, kind }); }
+  dome(r, x, y, z, color, kind = 0, o = {}) { return this.addGeo(new THREE.SphereGeometry(r, 16, 8, 0, TAU, 0, Math.PI / 2), { ...o, x, y, z, color, kind }); }
+  torus(R, r, x, y, z, color, kind = 0, o = {}) { return this.addGeo(new THREE.TorusGeometry(R, r, 5, 18), { rx: Math.PI / 2, ...o, x, y, z, color, kind }); }
+  gable(w, d, rh, x, y, z, color, kind = 9, o = {}) { return this.addGeo(gableGeo(w, d, rh), { ...o, x, y, z, color, kind }); }
+  frustum(bw, bd, tw, td, h, x, y, z, color, kind = 0, o = {}) { return this.addGeo(frustumGeo(bw, bd, tw, td, h), { ...o, x, y, z, color, kind }); }
+  // toothed gear whose axis is local +Z (so it can be mounted on a wall)
+  gear(r, teeth, thick, x, y, z, color, o = {}) {
+    const s = new GB();
+    s.addGeo(new THREE.CylinderGeometry(r * 0.86, r * 0.86, thick, 20, 1), { rx: Math.PI / 2, color });
+    s.addGeo(new THREE.CylinderGeometry(r * 0.26, r * 0.26, thick * 1.7, 10, 1), { rx: Math.PI / 2, color: o.hub ?? color });
+    for (let i = 0; i < teeth; i++) {
+      const a = i / teeth * TAU;
+      s.addGeo(GEO.box, { x: Math.cos(a) * r * 0.93, y: Math.sin(a) * r * 0.93, rz: a, sx: r * 0.2, sy: r * 0.2, sz: thick, color });
+    }
+    for (let i = 0; i < 3; i++) s.addGeo(GEO.box, { rz: i * Math.PI / 3, sx: r * 1.6, sy: r * 0.1, sz: thick * 1.3, color: o.hub ?? color });
+    return this.addGB(s, { x, y, z, rx: o.rx || 0, ry: o.ry || 0, rz: o.rz || 0, sx: o.s || 1 });
+  }
+  build() {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.n, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
+    g.setAttribute('aKind', new THREE.Float32BufferAttribute(this.k, 1));
+    g.computeBoundingSphere(); g.computeBoundingBox();
+    return g;
+  }
+}
+
+/* Batch: collects instances of one geometry and builds a single InstancedMesh (one draw call). */
+class Batch {
+  constructor(geo, mat) { this.geo = geo; this.mat = mat || structMat; this.mx = []; this.cl = []; this.mesh = null; finalizers.push(() => this.build()); }
+  add(x, y, z, ry = 0, sx = 1, sy = sx, sz = sx, color = null) {
+    const c = Math.cos(ry), s = Math.sin(ry);
+    this.mx.push(c * sx, 0, -s * sx, 0, 0, sy, 0, 0, s * sz, 0, c * sz, 0, x, y, z, 1);
+    this.cl.push(color ? color.r : 1, color ? color.g : 1, color ? color.b : 1);
+    return this;
+  }
+  addEuler(x, y, z, rx, ry, rz, sx, sy, sz, color = null) {   // arbitrary tilt (junk piles etc.)
+    _gm.compose(_gv.set(x, y, z), _gq.setFromEuler(_ge.set(rx, ry, rz, 'YXZ')), _gs.set(sx, sy, sz));
+    for (let i = 0; i < 16; i++) this.mx.push(_gm.elements[i]);
+    this.cl.push(color ? color.r : 1, color ? color.g : 1, color ? color.b : 1);
+    return this;
+  }
+  get count() { return this.cl.length / 3; }
+  /* Large batches are split into spatial chunks so frustum culling can skip the ones that are off-screen. */
+  build() {
+    const n = this.count;
+    if (!n || this.mesh) return this.mesh;
+    const groups = new Map();
+    if (n < Batch.MIN_SPLIT) groups.set('all', Array.from({ length: n }, (_, i) => i));
+    else for (let i = 0; i < n; i++) {
+      const key = Math.floor(this.mx[i * 16 + 12] / Batch.CHUNK) + ',' + Math.floor(this.mx[i * 16 + 14] / Batch.CHUNK);
+      let l = groups.get(key); if (!l) groups.set(key, l = []); l.push(i);
+    }
+    this.meshes = [];
+    for (const ids of groups.values()) {
+      const mesh = new THREE.InstancedMesh(this.geo, this.mat, ids.length);
+      const ca = new Float32Array(ids.length * 3), ma = mesh.instanceMatrix.array;
+      ids.forEach((id, j) => { for (let k = 0; k < 16; k++) ma[j * 16 + k] = this.mx[id * 16 + k]; ca[j * 3] = this.cl[id * 3]; ca[j * 3 + 1] = this.cl[id * 3 + 1]; ca[j * 3 + 2] = this.cl[id * 3 + 2]; });
+      mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(ca, 3);
+      mesh.computeBoundingSphere();
+      mesh.matrixAutoUpdate = false; mesh.updateMatrix();
+      scene.add(mesh); this.meshes.push(mesh);
+      if (this.maxDist) lodChunks.push({ mesh, c: mesh.boundingSphere.center, r: mesh.boundingSphere.radius, max: this.maxDist });
+    }
+    this.mesh = this.meshes[0];
+    return this.mesh;
+  }
+}
+Batch.CHUNK = 760; Batch.MIN_SPLIT = 100;
+/* distance LOD: small decorative batches are hidden chunk-by-chunk when they are far away (they sit deep in fog anyway) */
+const lodChunks = [];
+updaters.push(() => {
+  const cp = camera.position;
+  for (let i = 0; i < lodChunks.length; i++) { const l = lodChunks[i]; l.mesh.visible = cp.distanceTo(l.c) - l.r < l.max; }
+});
+function staticMesh(gb, mat) {
+  const m = new THREE.Mesh(gb.build ? gb.build() : gb, mat || structMat);
+  m.matrixAutoUpdate = false; scene.add(m); return m;
+}
+
+/* The shared "structure" material: Lambert + procedural walls (brick / stone / rust / elven),
+   procedurally placed windows that light up at night, lamps, furnaces and crystals.
+   Per-vertex `aKind`:  0 plain  1 brick+warm windows  2 elven+cool windows  3 dwarven stone+furnace windows
+                        4 lamp (night only)  5 fire/furnace (always, flickering)  6 orc rust+slit windows
+                        8 crystal (glows at night)  9 roof tiles  */
+const structMat = new THREE.MeshLambertMaterial({ vertexColors: true });
+structMat.onBeforeCompile = (sh) => {
+  hookGlobals(sh);
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', `#include <common>
+      attribute float aKind;
+      varying vec3 vLP; varying vec3 vLN; varying float vKind; varying float vSeed;`)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      vLP = position; vLN = normal; vKind = aKind;
+      #ifdef USE_INSTANCING
+        vSeed = fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898, 78.233))) * 43758.5453);
+      #else
+        vSeed = 0.5;
+      #endif`);
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', `#include <common>
+      varying vec3 vLP; varying vec3 vLN; varying float vKind; varying float vSeed;
+      uniform float uNight; uniform float uTime;
+      ${GLSL_NOISE}`)
+    .replace('#include <color_fragment>', `#include <color_fragment>
+      vec3 emisAdd = vec3(0.0);
+      {
+        float kd = vKind;
+        vec3 an = abs(vLN);
+        vec3 fwp = fwidth(vLP);
+        float fwAll = max(fwp.x, max(fwp.y, fwp.z));
+        if (kd > 3.5 && kd < 4.5) {
+          emisAdd += diffuseColor.rgb * uNight * 3.2;
+        } else if (kd > 4.5 && kd < 5.5) {
+          emisAdd += diffuseColor.rgb * (2.1 + 0.55 * sin(uTime * 9.0 + vSeed * 60.0 + vLP.x * 2.3 + vLP.z * 1.7));
+        } else if (kd > 7.5 && kd < 8.5) {
+          emisAdd += diffuseColor.rgb * (0.22 + 2.4 * uNight);
+        } else if (kd > 8.5 && kd < 9.5) {
+          float rows = 0.86 + 0.14 * smoothstep(0.0, 0.25, fract(vLP.y * 3.0 + (an.y > 0.8 ? vLP.x * 3.0 : 0.0)));
+          diffuseColor.rgb *= mix(0.93, rows, 1.0 - smoothstep(0.1, 0.3, fwAll));
+        } else if (kd > 0.5 && kd < 6.5 && an.y < 0.5) {
+          float uC = (an.x > an.z) ? vLP.z : vLP.x;
+          float vC = vLP.y;
+          vec2 cell = vec2(3.2, 3.8); vec2 wsz = vec2(1.15, 2.0); vec3 wcol = vec3(1.0, 0.70, 0.34);
+          float y0 = 2.2; float litK = 1.55; float dayLit = 0.0; vec3 glass = vec3(0.10, 0.15, 0.20);
+          float pat = 1.0;
+          if (kd < 1.5) {                                   // brick
+            float row = floor(vC / 0.15);
+            float off = 0.5 * mod(row, 2.0);
+            float bx = fract(uC / 0.45 + off), by = fract(vC / 0.15);
+            float mortar = max(step(bx, 0.07), step(by, 0.14));
+            float bf = 1.0 - smoothstep(0.05, 0.16, fwAll);
+            float bvar = 0.86 + 0.26 * hash12(vec2(floor(uC / 0.45 + off), row));
+            pat = mix(0.92, mix(bvar, 0.62, mortar), bf);
+          } else if (kd < 2.5) {                            // elven
+            cell = vec2(4.4, 6.8); wsz = vec2(1.1, 3.8); wcol = vec3(0.55, 1.0, 0.78); y0 = 3.0; litK = 1.3; glass = vec3(0.20, 0.38, 0.38);
+            pat = 0.95 + 0.10 * vnoise(vec2(uC * 2.2, vC * 0.3));
+          } else if (kd < 3.5) {                            // dwarven stone
+            cell = vec2(5.6, 5.0); wsz = vec2(1.5, 1.5); wcol = vec3(1.0, 0.50, 0.14); y0 = 3.2; litK = 1.0; dayLit = 0.7; glass = vec3(0.07, 0.06, 0.06);
+            float row = floor(vC / 0.9);
+            float bx = fract(uC / 1.7 + 0.37 * mod(row, 3.0)), by = fract(vC / 0.9);
+            float mortar = max(step(bx, 0.05), step(by, 0.09));
+            float bf = 1.0 - smoothstep(0.2, 0.6, fwAll);
+            pat = mix(0.9, mix(0.88 + 0.24 * hash12(vec2(floor(uC / 1.7), row)), 0.6, mortar), bf);
+          } else {                                          // orc rust plates
+            cell = vec2(4.6, 4.2); wsz = vec2(0.55, 1.7); wcol = vec3(1.0, 0.42, 0.10); y0 = 2.6; litK = 1.0; dayLit = 0.55; glass = vec3(0.05, 0.04, 0.03);
+            float rust = fbm2(vec2(uC * 0.55, vC * 0.45) + vSeed * 20.0);
+            float plate = max(step(fract(uC / 1.7), 0.03), step(fract(vC / 1.35), 0.04));
+            pat = (0.62 + 0.8 * rust) * (1.0 - 0.35 * plate);
+            diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.25, 0.8, 0.55), smoothstep(0.5, 0.8, rust));
+          }
+          vec2 cuv = vec2(uC / cell.x, (vC - y0) / cell.y);
+          vec2 cid = floor(cuv);
+          vec2 q = abs(fract(cuv) - 0.5) * cell;
+          float aa = max(fwAll, 0.02);
+          vec2 wm = smoothstep(wsz * 0.5 + aa, wsz * 0.5 - aa, q);
+          float mask = wm.x * wm.y * step(0.0, vC - y0);
+          float far = smoothstep(0.35 * min(cell.x, cell.y), 0.9 * min(cell.x, cell.y), fwAll);
+          mask = mix(mask, wsz.x * wsz.y / (cell.x * cell.y), far);
+          float hv = hash12(cid + vec2(vSeed * 91.7, vSeed * 37.3) + sign(vLN.x + vLN.z + 0.001) * 13.0);
+          float on = step(hv * litK, uNight);
+          on = max(on, dayLit * step(hv, 0.55));
+          on = mix(on, clamp(uNight / litK, 0.0, 1.0) * 0.8 + dayLit * 0.3, far);
+          diffuseColor.rgb = mix(diffuseColor.rgb * pat, glass, mask * 0.9);
+          emisAdd += wcol * on * mask * 1.9;
+        }
+      }`)
+    .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n totalEmissiveRadiance += emisAdd;');
+};
+
+/* ---- billboard smoke (soot / steam): fully animated in the vertex shader ---- */
+function makeSmokeSystem(opts = {}) {
+  const colA = opts.colA || [0.13, 0.13, 0.14], colB = opts.colB || [0.54, 0.54, 0.56], alpha = opts.alpha ?? 0.6;
+  const src = [];
+  const sys = {
+    add(x, y, z, size = 3, rise = 80, puffs = 6, speed = 0.06) { src.push([x, y, z, size, rise, puffs, speed]); return src.length - 1; },
+    mesh: null, start: [], vel: null,
+    /* move a (moving) source: puffs trail behind it along -velocity */
+    move(i, x, y, z, vx, vz) {
+      const a = this.mesh.geometry.attributes, n = src[i][5], s0 = this.start[i];
+      for (let k = 0; k < n; k++) { const o = (s0 + k) * 4; a.aBase.array[o] = x; a.aBase.array[o + 1] = y; a.aBase.array[o + 2] = z; a.aVel.array[(s0 + k) * 2] = vx; a.aVel.array[(s0 + k) * 2 + 1] = vz; }
+      a.aBase.needsUpdate = true; a.aVel.needsUpdate = true;
+    },
+    build() {
+      let total = 0; for (const s of src) total += s[5];
+      if (!total) return null;
+      const base = new Float32Array(total * 4), prm = new Float32Array(total * 4), vel = new Float32Array(total * 2);
+      let k = 0;
+      for (const [x, y, z, size, rise, puffs, speed] of src) {
+        const off = rand(); this.start.push(k);
+        for (let i = 0; i < puffs; i++, k++) {
+          base.set([x, y, z, rand()], k * 4);
+          prm.set([i / puffs + off, size * rr(0.8, 1.25), speed * rr(0.85, 1.15), rise * rr(0.85, 1.15)], k * 4);
+        }
+      }
+      const q = new THREE.PlaneGeometry(1, 1), geo = new THREE.InstancedBufferGeometry();
+      geo.index = q.index; geo.setAttribute('position', q.attributes.position);
+      geo.setAttribute('aBase', new THREE.InstancedBufferAttribute(base, 4));
+      geo.setAttribute('aParam', new THREE.InstancedBufferAttribute(prm, 4));
+      geo.setAttribute('aVel', new THREE.InstancedBufferAttribute(vel, 2));
+      geo.instanceCount = total;
+      const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uColA: { value: new THREE.Vector3(...colA) }, uColB: { value: new THREE.Vector3(...colB) }, uAlpha: { value: alpha } }]);
+      for (const kk in G) uniforms[kk] = G[kk];
+      const mat = new THREE.ShaderMaterial({
+        uniforms, fog: true, transparent: true, depthWrite: false,
+        vertexShader: `
+          attribute vec4 aBase; attribute vec4 aParam; attribute vec2 aVel;
+          uniform float uTime; uniform vec3 uWind;
+          varying vec2 vUv; varying float vLife; varying float vSeed;
+          #include <fog_pars_vertex>
+          void main(){
+            float life = fract(uTime * aParam.z + aParam.x);
+            vec3 wp = aBase.xyz + vec3(0.0, life * aParam.w, 0.0) + uWind * life * life * aParam.w * 0.9;
+            wp.xz -= aVel * (life / aParam.z);           // moving sources leave a trail behind them
+            wp.xz += vec2(sin(aBase.w * 17.0 + life * 6.0), cos(aBase.w * 11.0 + life * 5.0)) * life * 3.5;
+            float s = aParam.y * (0.55 + 2.6 * life);
+            float ang = aBase.w * 6.2832 + life * 1.4;
+            vec2 cr = position.xy; float c = cos(ang), sn = sin(ang);
+            cr = vec2(c * cr.x - sn * cr.y, sn * cr.x + c * cr.y);
+            vec4 mvPosition = viewMatrix * vec4(wp, 1.0);
+            mvPosition.xy += cr * s;
+            gl_Position = projectionMatrix * mvPosition;
+            vUv = position.xy * 2.0; vLife = life; vSeed = aBase.w;
+            #include <fog_vertex>
+          }`,
+        fragmentShader: `
+          uniform vec3 uColA; uniform vec3 uColB; uniform float uAlpha; uniform float uDayLight; uniform float uNight;
+          varying vec2 vUv; varying float vLife; varying float vSeed;
+          ${GLSL_NOISE}
+          #include <fog_pars_fragment>
+          void main(){
+            float d2 = dot(vUv, vUv);
+            if (d2 > 1.0) discard;
+            float n = vnoise(vUv * 2.2 + vSeed * 40.0);
+            float a = exp(-d2 * 2.6) * (0.55 + 0.8 * n) * (1.0 - smoothstep(0.55, 1.0, d2));
+            a *= smoothstep(0.0, 0.15, vLife) * pow(1.0 - vLife, 1.2) * uAlpha;
+            vec3 col = mix(uColA, uColB, smoothstep(0.0, 0.9, vLife)) * (0.16 + 0.84 * uDayLight);
+            gl_FragColor = vec4(col, a);
+            #include <fog_fragment>
+          }`,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false; mesh.renderOrder = 5;
+      scene.add(mesh); this.mesh = mesh; return mesh;
+    },
+  };
+  finalizers.push(() => sys.build());
+  return sys;
+}
+
+/* ---- additive glow sprites for lamps, fires, furnaces (mode 0 = night only, 1 = flicker, 2 = steady) ---- */
+function makeGlowSystem() {
+  const items = [];
+  const sys = {
+    add(x, y, z, size, r, g, b, mode = 0) { items.push(x, y, z, size, r, g, b, mode); return items.length / 8 - 1; },
+    set(i, x, y, z) { const a = this.mesh.geometry.attributes.aPos; a.array[i * 4] = x; a.array[i * 4 + 1] = y; a.array[i * 4 + 2] = z; a.needsUpdate = true; },   // moving lights
+    mesh: null,
+    build() {
+      const n = items.length / 8; if (!n) return null;
+      const aPos = new Float32Array(n * 4), aCol = new Float32Array(n * 4);
+      for (let i = 0; i < n; i++) { for (let k = 0; k < 4; k++) { aPos[i * 4 + k] = items[i * 8 + k]; aCol[i * 4 + k] = items[i * 8 + 4 + k]; } }
+      const q = new THREE.PlaneGeometry(1, 1), geo = new THREE.InstancedBufferGeometry();
+      geo.index = q.index; geo.setAttribute('position', q.attributes.position);
+      geo.setAttribute('aPos', new THREE.InstancedBufferAttribute(aPos, 4));
+      geo.setAttribute('aCol', new THREE.InstancedBufferAttribute(aCol, 4));
+      geo.instanceCount = n;
+      const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {}]);
+      for (const kk in G) uniforms[kk] = G[kk];
+      const mat = new THREE.ShaderMaterial({
+        uniforms, fog: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        vertexShader: `
+          attribute vec4 aPos; attribute vec4 aCol;
+          uniform float uNight; uniform float uTime;
+          varying vec2 vUv; varying vec3 vCol;
+          #include <fog_pars_vertex>
+          void main(){
+            float mode = aCol.w;
+            float on = mode < 0.5 ? uNight : (mode > 2.5 ? 0.14 + 0.86 * uNight : 1.0);
+            float fl = (mode > 0.5 && mode < 1.5) ? (0.80 + 0.20 * sin(uTime * 11.0 + aPos.x * 3.1) * sin(uTime * 7.3 + aPos.z * 2.3)) : 1.0;
+            vec4 mvPosition = viewMatrix * vec4(aPos.xyz, 1.0);
+            float dist = -mvPosition.z;
+            float s = aPos.w * on * fl * (1.0 + dist * 0.0012);
+            mvPosition.xy += position.xy * s;
+            gl_Position = projectionMatrix * mvPosition;
+            vUv = position.xy * 2.0;
+            vCol = aCol.rgb * on * fl * (1.0 - smoothstep(1100.0, 2200.0, dist)) * smoothstep(1.0, 10.0, dist);
+            #include <fog_vertex>
+          }`,
+        fragmentShader: `
+          varying vec2 vUv; varying vec3 vCol;
+          #include <fog_pars_fragment>
+          void main(){
+            float r2 = dot(vUv, vUv);
+            if (r2 > 1.0) discard;
+            float g = exp(-r2 * 3.4) * (1.0 - r2) * 0.75 + exp(-r2 * 22.0) * 0.9;
+            gl_FragColor = vec4(vCol * g, 1.0);
+            #ifdef USE_FOG
+              float ff = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
+              gl_FragColor.rgb *= (1.0 - ff);
+            #endif
+          }`,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.frustumCulled = false; mesh.renderOrder = 6;
+      scene.add(mesh); this.mesh = mesh; return mesh;
+    },
+  };
+  finalizers.push(() => sys.build());
+  return sys;
+}
+const sootSmoke = makeSmokeSystem();                               // chimneys, factories
+const steamPuffs = makeSmokeSystem({ colA: [0.80, 0.82, 0.84], colB: [0.95, 0.96, 0.97], alpha: 0.5 });
+const glowSys = makeGlowSystem();                                  // lamps / fires / furnaces
+
+/* Shared palette */
+const K = {
+  brick: '#b4694f', brickD: '#8a4a3a', brickL: '#c98a68', cream: '#d8c9a8', stone: '#9a958a', stoneD: '#6f6b64', stoneL: '#b9b4a8',
+  brass: '#c99a3c', brassD: '#8f6a24', copper: '#4a9680', copperD: '#2f6f5c', slate: '#4a5260', slateD: '#343a44',
+  terra: '#a9472e', terraD: '#7e3322', wood: '#6a4a30', woodD: '#46301e', iron: '#35353b', ironL: '#55565e',
+  glass: '#4a6a78', white: '#e6e2d6', rust: '#8a4a28', rustD: '#5e321c', soot: '#2a2826', thatch: '#8a7440',
+};
+/* Common trees (used by parks, fields, hills, villages) */
+const TREE_GEO = (() => {
+  const mk = (fn) => { const g = new GB(); fn(g); return g.build(); };
+  return {
+    round: mk((g) => {
+      g.cyl(0.32, 0.55, 4.6, 6, 0, -0.6, 0, '#5b4129', 0, { grad: [0.7, 1] });
+      g.ico(3.1, 0, 6.2, 0, '#437f37', 0, { sy: 0.92, grad: [0.62, 1.12] });
+      g.ico(2.3, 1.9, 5.2, 0.8, '#518f3e', 0, { grad: [0.62, 1.1] });
+      g.ico(2.1, -1.7, 5.4, -0.6, '#3a7231', 0, { grad: [0.62, 1.1] });
+    }),
+    poplar: mk((g) => {
+      g.cyl(0.25, 0.45, 3.2, 6, 0, -0.6, 0, '#5b4129');
+      g.ico(2.0, 0, 6.6, 0, '#4b8838', 0, { sy: 2.5, grad: [0.6, 1.15] });
+    }),
+    pine: mk((g) => {
+      g.cyl(0.25, 0.42, 2.8, 6, 0, -0.6, 0, '#4d3723');
+      g.cone(3.1, 4.2, 7, 0, 1.6, 0, '#2d5e35', 0, { grad: [0.6, 1.1] });
+      g.cone(2.4, 3.8, 7, 0, 4.2, 0, '#336b3b', 0, { grad: [0.6, 1.1] });
+      g.cone(1.6, 3.4, 7, 0, 6.6, 0, '#3a7842', 0, { grad: [0.6, 1.15] });
+    }),
+  };
+})();
+const treeBatch = { round: new Batch(TREE_GEO.round), poplar: new Batch(TREE_GEO.poplar), pine: new Batch(TREE_GEO.pine) };
+const _tc = new THREE.Color();
+function addCommonTree(x, z, kind = null, scale = null) {
+  const y = terrainHeight(x, z);
+  const k = kind || (rand() < 0.55 ? 'round' : rand() < 0.5 ? 'poplar' : 'pine');
+  const s = scale ?? rr(0.8, 1.45);
+  _tc.setRGB(rr(0.82, 1.12), rr(0.9, 1.1), rr(0.78, 1.05));
+  treeBatch[k].add(x, y, z, rand() * TAU, s, s * rr(0.9, 1.2), s, _tc);
+}
+
+/* ======================================================================
+   8. HUMAN CITY  (stage 3) -- brick & brass, clock tower, mooring masts
+   ====================================================================== */
+const cityR = mulberry32(31415);
+const cr = () => cityR();
+const crr = (a, b) => a + (b - a) * cityR();
+const cpick = (arr) => arr[Math.floor(cityR() * arr.length)];
+function cweighted(list) { let t = 0; for (const [, w] of list) t += w; let r = cityR() * t; for (const [v, w] of list) { r -= w; if (r <= 0) return v; } return list[0][0]; }
+
+const cityInfo = { moorings: [], clockPos: null };
+const ARC = {}, cityBatch = {};
+function defArc(name, a) { ARC[name] = a; cityBatch[name] = new Batch(a.geo); }
+
+function chimney(g, ch, x, y0, z, hgt, size = 1.5, smoke = 2.2) {
+  g.box(size, hgt, size, x, y0, z, K.brickD, 0, { grad: [0.8, 1] });
+  g.box(size + 0.5, 0.45, size + 0.5, x, y0 + hgt, z, K.stone);
+  g.cyl(0.38, 0.38, 0.9, 6, x, y0 + hgt + 0.45, z, K.soot);
+  ch.push([x, y0 + hgt + 1.5, z, smoke]);
+}
+/* Lattice airship mooring mast: base at (x,y,z), height H. Returns the mooring point (cone tip). */
+function addMast(g, x, y, z, H) {
+  const W = 1.9, seg = 7, n = Math.max(1, Math.floor(H / seg));
+  g.box(7, 1.4, 7, x, y, z, K.stoneD);
+  for (const [lx, lz] of [[-W, -W], [W, -W], [W, W], [-W, W]]) g.box(0.5, H, 0.5, x + lx, y + 1.4, z + lz, K.ironL, 0, { grad: [0.8, 1] });
+  const th = Math.atan2(seg, 2 * W), len = Math.hypot(2 * W, seg);
+  for (let i = 0; i <= n; i++) {
+    const yy = y + 1.4 + i * seg;
+    g.box(2 * W + 0.5, 0.35, 0.35, x, yy, z - W, K.iron); g.box(2 * W + 0.5, 0.35, 0.35, x, yy, z + W, K.iron);
+    g.box(0.35, 0.35, 2 * W + 0.5, x - W, yy, z, K.iron); g.box(0.35, 0.35, 2 * W + 0.5, x + W, yy, z, K.iron);
+    if (i < n) {
+      const s = i % 2 ? 1 : -1;
+      g.addGeo(GEO.box, { x, y: yy + seg / 2, z: z - W, rz: s * th, sx: len, sy: 0.28, sz: 0.28, color: K.iron });
+      g.addGeo(GEO.box, { x, y: yy + seg / 2, z: z + W, rz: -s * th, sx: len, sy: 0.28, sz: 0.28, color: K.iron });
+      g.addGeo(GEO.box, { x: x - W, y: yy + seg / 2, z, rx: s * th, sx: 0.28, sy: 0.28, sz: len, color: K.iron });
+      g.addGeo(GEO.box, { x: x + W, y: yy + seg / 2, z, rx: -s * th, sx: 0.28, sy: 0.28, sz: len, color: K.iron });
+    }
+  }
+  const top = y + 1.4 + H;
+  g.cyl(7.4, 7.4, 0.8, 18, x, top, z, K.brassD);
+  g.cyl(6.6, 6.6, 0.3, 18, x, top + 0.8, z, K.ironL);
+  for (let i = 0; i < 14; i++) { const a = i / 14 * TAU; g.box(0.16, 1.1, 0.16, x + Math.cos(a) * 7.1, top + 0.8, z + Math.sin(a) * 7.1, K.brass); if (i % 2 === 0) g.sphere(0.32, x + Math.cos(a) * 7.1, top + 2.1, z + Math.sin(a) * 7.1, '#ffd9a0', 4); }
+  g.torus(7.1, 0.1, x, top + 1.9, z, K.brass);
+  g.cone(2.6, 7, 10, x, top + 0.8, z, K.brass, 0, { grad: [0.7, 1.1] });
+  g.torus(2.1, 0.22, x, top + 4.0, z, K.brassD);
+  g.box(15, 0.5, 0.5, x + 2, top + 2.6, z, K.iron); g.sphere(0.9, x - 5.6, top + 2.85, z, K.ironL); g.torus(0.7, 0.12, x + 9.4, top + 2.2, z, K.brass, 0, { rx: 0 });
+  g.sphere(0.7, x, top + 8.2, z, '#ff2a1a', 4);
+  return [x, top + 7.8, z];
+}
+
+/* ---- building archetypes (local origin = bottom centre, front = +z) ---- */
+function arcHouse(w, d, h, rh, roof, wall, dormers = false) {
+  const g = new GB(), ch = [];
+  g.box(w, h, d, 0, 0, 0, wall, 1, { grad: [0.68, 1] });
+  g.box(w + 0.5, 1.1, d + 0.5, 0, 0, 0, K.stoneD);
+  g.box(w + 0.7, 0.45, d + 0.7, 0, h - 0.45, 0, K.stone);
+  g.gable(w + 1.4, d + 1.4, rh, 0, h, 0, roof, 9);
+  g.box(2.0, 3.0, 0.5, 0, 0, d / 2 - 0.1, K.woodD);
+  g.box(3.0, 0.35, 1.5, 0, 0, d / 2 + 0.4, K.stone);
+  if (dormers) for (const s of [-1, 1]) { g.box(2.2, 2.4, 1.8, s * w * 0.24, h + 0.3, d * 0.2, wall, 0); g.gable(3.0, 2.4, 1.3, s * w * 0.24, h + 2.7, d * 0.2, roof, 9, { ry: Math.PI / 2 }); g.box(1.2, 1.3, 0.2, s * w * 0.24, h + 0.9, d * 0.2 + 0.95, K.slateD); }
+  chimney(g, ch, w * 0.27, h - 0.5, -d * 0.12, rh + 2.0);
+  return { geo: g.build(), chim: ch, w, d, h: h + rh, smoky: 0.45 };
+}
+function arcTown(w, d, h, wall) {
+  const g = new GB(), ch = [];
+  g.box(w, h, d, 0, 0, 0, wall, 1, { grad: [0.66, 1] });
+  g.box(w + 0.5, 1.2, d + 0.5, 0, 0, 0, K.stoneD);
+  g.box(w + 0.9, 0.6, d + 0.9, 0, h - 0.6, 0, K.brass);
+  g.frustum(w + 0.6, d + 0.6, w * 0.58, d * 0.58, 4.4, 0, h, 0, K.slate, 9);
+  g.box(w * 0.58, 0.5, d * 0.58, 0, h + 4.4, 0, K.slateD);
+  for (const s of [-1, 1]) { g.box(2.0, 2.2, 1.4, s * w * 0.24, h + 0.3, d * 0.5 - 1.0, K.slateD); g.gable(2.6, 2.0, 1.1, s * w * 0.24, h + 2.5, d * 0.5 - 1.0, K.slate, 9, { ry: Math.PI / 2 }); }
+  g.box(2.2, 3.2, 0.5, 0, 0, d / 2 - 0.1, K.woodD);
+  g.box(3.4, 0.3, 1.8, 0, 3.3, d / 2 + 0.6, K.brassD);
+  chimney(g, ch, w * 0.3, h + 0.5, -d * 0.25, 4.2); chimney(g, ch, -w * 0.3, h + 0.5, -d * 0.25, 4.2);
+  return { geo: g.build(), chim: ch, w, d, h: h + 4.9, smoky: 0.5 };
+}
+function arcTenement(w, d, h, wall, withMast = false) {
+  const g = new GB(), ch = [];
+  g.box(w, h, d, 0, 0, 0, wall, 1, { grad: [0.64, 1] });
+  g.box(w + 0.6, 3.0, d + 0.6, 0, 0, 0, K.stoneD);
+  for (let i = 0; i < 3; i++) g.box(3.6, 0.25, 1.7, (i - 1) * 4.2, 3.0, d / 2 + 1.0, cpick(['#a8372b', '#2f5f7a', '#c79a35', '#4a7a46']), 0, { rx: -0.3 });
+  g.box(w + 0.9, 0.7, d + 0.9, 0, h - 0.7, 0, K.brass);
+  for (const [sx, sz, ex, ez] of [[0, d / 2 + 0.1, w + 0.8, 0.5], [0, -d / 2 - 0.1, w + 0.8, 0.5], [w / 2 + 0.1, 0, 0.5, d + 0.8], [-w / 2 - 0.1, 0, 0.5, d + 0.8]]) g.box(ex, 1.0, ez, sx, h, sz, K.stone);
+  // water tank on legs
+  for (const [lx, lz] of [[-1.2, -1.2], [1.2, -1.2], [1.2, 1.2], [-1.2, 1.2]]) g.box(0.25, 2.0, 0.25, -w * 0.22 + lx, h, -d * 0.2 + lz, K.woodD);
+  g.cyl(1.8, 1.8, 2.8, 10, -w * 0.22, h + 2.0, -d * 0.2, K.wood); g.cone(2.0, 1.2, 10, -w * 0.22, h + 4.8, -d * 0.2, K.slateD);
+  g.torus(1.8, 0.07, -w * 0.22, h + 2.8, -d * 0.2, K.iron); g.torus(1.8, 0.07, -w * 0.22, h + 4.0, -d * 0.2, K.iron);
+  chimney(g, ch, w * 0.3, h, d * 0.15, 4.5, 1.6); chimney(g, ch, w * 0.12, h, -d * 0.3, 3.2, 1.3);
+  g.cyl(0.35, 0.35, 2.4, 6, w * 0.34, h, -d * 0.32, K.brassD); g.cone(0.7, 0.6, 8, w * 0.34, h + 2.4, -d * 0.32, K.brassD);
+  let h2 = h;
+  if (withMast) { const m = addMast(g, 0, h, 0, 30); h2 = h + 40; return { geo: g.build(), chim: ch, w, d, h: h2, smoky: 0.5, mooring: m }; }
+  return { geo: g.build(), chim: ch, w, d, h: h2 + 3, smoky: 0.5 };
+}
+function arcTower(wall) {
+  const g = new GB(), ch = [];
+  g.box(15, 26, 15, 0, 0, 0, wall, 1, { grad: [0.64, 1] });
+  g.box(15.8, 0.9, 15.8, 0, 25.3, 0, K.brass);
+  g.box(16.4, 2.6, 16.4, 0, 0, 0, K.stoneD);
+  g.box(11, 10, 11, 0, 26, 0, wall, 1, { grad: [0.8, 1] });
+  g.box(11.8, 0.8, 11.8, 0, 35.2, 0, K.brass);
+  g.frustum(11.4, 11.4, 4.5, 4.5, 6.5, 0, 36, 0, K.copper, 9);
+  g.cone(0.9, 10, 6, 0, 42.5, 0, K.brass);
+  g.sphere(0.65, 0, 53.2, 0, '#ff2a1a', 4);
+  g.gear(2.4, 12, 0.5, 0, 14, 7.7, K.brass);
+  chimney(g, ch, -5.2, 26, -5.2, 3.5, 1.4);
+  return { geo: g.build(), chim: ch, w: 16, d: 16, h: 54, smoky: 0.3 };
+}
+function arcSpire(wall) {
+  const g = new GB();
+  g.box(16, 30, 16, 0, 0, 0, wall, 1, { grad: [0.62, 1] });
+  g.box(16.8, 3, 16.8, 0, 0, 0, K.stoneD);
+  g.box(16.8, 0.9, 16.8, 0, 29.4, 0, K.brass);
+  g.box(12.5, 14, 12.5, 0, 30, 0, wall, 1, { grad: [0.8, 1] });
+  g.box(13.3, 0.8, 13.3, 0, 43.2, 0, K.brass);
+  g.box(9, 10, 9, 0, 44, 0, wall, 1, { grad: [0.8, 1] });
+  g.box(9.8, 0.8, 9.8, 0, 53.2, 0, K.brass);
+  g.frustum(9.4, 9.4, 3, 3, 7, 0, 54, 0, K.copper, 9);
+  g.cyl(0.35, 0.8, 18, 6, 0, 61, 0, K.brass);
+  g.sphere(0.9, 0, 79.5, 0, K.brass); g.sphere(0.5, 0, 81, 0, '#ff2a1a', 4);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { g.box(1.6, 4, 1.6, sx * 6.4, 54, sz * 6.4, K.stoneL); g.cone(1.2, 3.2, 6, sx * 6.4, 58, sz * 6.4, K.copper); }
+  g.gear(3.4, 14, 0.6, 0, 22, 8.4, K.brass);
+  return { geo: g.build(), chim: [], w: 17, d: 17, h: 82 };
+}
+function arcFactory(wall) {
+  const g = new GB(), ch = [];
+  g.box(30, 12, 22, 0, 0, 0, wall, 1, { grad: [0.6, 1] });
+  g.box(30.6, 1.4, 22.6, 0, 0, 0, K.stoneD);
+  for (let i = 0; i < 4; i++) g.gable(22.6, 7.6, 3.4, -11.25 + i * 7.5, 12, 0, K.slate, 9, { ry: Math.PI / 2 });
+  for (const sx of [-1, 1]) {
+    const x = sx * 11, z = -7;
+    g.cyl(1.5, 2.5, 44, 10, x, 0, z, K.brickD, 0, { grad: [0.7, 1] });
+    for (const yy of [10, 24, 36]) g.torus(1.9 - yy * 0.012, 0.18, x, yy, z, K.iron);
+    g.cyl(1.9, 1.5, 1.4, 10, x, 44, z, K.stone); ch.push([x, 46, z, 5.5]);
+  }
+  g.addGeo(new THREE.CylinderGeometry(2.6, 2.6, 12, 14, 1), { x: -4, y: 4.2, z: 14.5, rz: Math.PI / 2, color: K.copper });      // horizontal boiler
+  for (const bx of [-8, 0]) g.torus(2.7, 0.18, bx, 4.2, 14.5, K.brassD, 0, { rx: 0, ry: Math.PI / 2 });
+  g.box(24, 0.6, 0.6, 0, 6, 11.3, K.brass); g.box(0.6, 8, 0.6, -9, 6, 11.3, K.brassD); g.box(0.6, 8, 0.6, 9, 6, 11.3, K.brassD);
+  g.gear(3.6, 16, 0.7, 15.4, 7, 0, K.brass, { ry: Math.PI / 2 });
+  g.box(8, 6.5, 0.6, 6, 0, 11.1, K.woodD);
+  return { geo: g.build(), chim: ch, w: 31, d: 23, h: 46, smoky: 1.0, big: true };
+}
+function arcHall(wall) {
+  const g = new GB();
+  g.box(28, 14, 28, 0, 0, 0, wall, 1, { grad: [0.62, 1] });
+  g.box(29, 1.4, 29, 0, 0, 0, K.stoneD); g.box(29.4, 0.9, 29.4, 0, 13.3, 0, K.brass);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { g.cyl(2.6, 2.9, 18, 10, sx * 14, 0, sz * 14, K.stoneL, 0, { grad: [0.7, 1] }); g.cone(3.5, 5.5, 10, sx * 14, 18, sz * 14, K.copper); g.sphere(0.4, sx * 14, 24, sz * 14, K.brass); }
+  g.cyl(8.8, 9.2, 5.5, 18, 0, 14, 0, K.stoneL);
+  g.dome(8.8, 0, 19.5, 0, K.copper); g.torus(8.8, 0.35, 0, 19.5, 0, K.brass);
+  g.cyl(1.4, 1.6, 3, 8, 0, 28, 0, K.brass); g.cone(1.7, 4.5, 8, 0, 31, 0, K.brass); g.sphere(0.4, 0, 36, 0, K.brass);
+  for (let i = 0; i < 6; i++) g.cyl(0.7, 0.85, 10, 8, -6.25 + i * 2.5, 0.8, 15.2, K.white, 0, { grad: [0.8, 1] });
+  g.gable(16.5, 4.6, 3.2, 0, 10.8, 14.2, K.stoneL, 0);
+  g.box(18, 0.8, 5, 0, 10.8, 14, K.stoneL); g.box(20, 0.8, 6, 0, 0, 16.5, K.stone);
+  return { geo: g.build(), chim: [], w: 29, d: 29, h: 36, big: true };
+}
+function arcLibrary(wall) {
+  const g = new GB();
+  g.box(24, 17, 24, 0, 0, 0, wall, 1, { grad: [0.62, 1] });
+  g.box(24.8, 1.6, 24.8, 0, 0, 0, K.stoneD); g.box(25, 0.8, 25, 0, 16.2, 0, K.brass);
+  g.box(10, 6, 10, 0, 17, 0, K.stoneL);
+  g.dome(7.2, 0, 23, 0, K.brass, 0, { grad: [0.75, 1.15] }); g.cyl(1, 1.2, 2.2, 8, 0, 30, 0, K.brassD); g.cone(1.2, 3.5, 8, 0, 32, 0, K.brass);
+  for (const sx of [-1, 1]) { g.cyl(2.2, 2.4, 22, 8, sx * 12, 0, 12, K.stoneL, 0, { grad: [0.7, 1] }); g.cone(3.0, 5, 8, sx * 12, 22, 12, K.copper); }
+  g.frustum(25, 25, 18, 18, 4, 0, 17.8, 0, K.slate, 9);
+  g.gear(3.0, 14, 0.5, 0, 9, 12.3, K.brass);
+  return { geo: g.build(), chim: [], w: 25, d: 25, h: 36, big: true };
+}
+function arcWarehouse(wall) {
+  const g = new GB(), ch = [];
+  g.box(26, 9, 16, 0, 0, 0, wall, 1, { grad: [0.62, 1] });
+  g.box(26.6, 1.2, 16.6, 0, 0, 0, K.stoneD);
+  g.gable(27.4, 17.4, 4.5, 0, 9, 0, K.rust, 9);
+  g.box(6.2, 6.4, 0.5, -5, 0, 8, K.woodD); g.box(6.2, 6.4, 0.5, 5, 0, 8, K.woodD);
+  g.box(0.5, 0.5, 6, 0, 12.5, 8.5, K.iron); g.box(0.3, 4, 0.3, 0, 8.6, 11.4, K.iron); g.torus(0.5, 0.1, 0, 8.4, 11.4, K.brass, 0, { rx: 0 });
+  chimney(g, ch, 8, 9, -3, 6, 1.6, 2.6);
+  return { geo: g.build(), chim: ch, w: 27, d: 17, h: 14, smoky: 0.5, big: true };
+}
+function arcRow(wall) {
+  const g = new GB(), ch = [];
+  g.box(32, 13, 12, 0, 0, 0, wall, 1, { grad: [0.64, 1] });
+  g.box(32.6, 1.2, 12.6, 0, 0, 0, K.stoneD);
+  g.box(32.8, 0.5, 12.8, 0, 12.5, 0, K.stone);
+  for (let i = 0; i < 4; i++) {
+    const x = -12 + i * 8;
+    g.gable(13, 8.3, 4.6, x, 13, 0, i % 2 ? K.slate : K.terra, 9, { ry: Math.PI / 2 });
+    g.box(1.9, 2.8, 0.5, x, 0, 6 - 0.1, K.woodD);
+    g.box(2.6, 0.25, 1.2, x, 3.0, 6.6, cpick(['#a8372b', '#2f5f7a', '#c79a35']), 0, { rx: -0.3 });
+    if (i % 2 === 0) chimney(g, ch, x + 4, 13.5, -2, 3.4, 1.3);
+  }
+  return { geo: g.build(), chim: ch, w: 32, d: 13, h: 19, smoky: 0.55 };
+}
+function arcStall() {
+  const g = new GB();
+  g.box(3.6, 1.0, 1.6, 0, 0, 0.2, K.wood);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) g.box(0.14, 2.8, 0.14, sx * 1.8, 0, sz * 1.4, K.woodD);
+  g.frustum(4.4, 3.4, 3.0, 2.2, 0.9, 0, 2.8, 0, '#ffffff', 0);
+  g.box(0.5, 0.4, 0.5, -1.0, 1.0, 0.2, '#b5462e'); g.box(0.5, 0.4, 0.5, 0.2, 1.0, 0.2, '#c8a43a'); g.box(0.5, 0.4, 0.5, 1.1, 1.0, 0.2, '#4a7a46');
+  return { geo: g.build(), chim: [], w: 4, d: 3, h: 4 };
+}
+const lampGeo = (() => {
+  const g = new GB();
+  g.cyl(0.5, 0.6, 0.9, 6, 0, 0, 0, K.iron); g.cyl(0.14, 0.24, 5.0, 6, 0, 0.9, 0, K.iron);
+  g.box(1.0, 0.12, 0.12, 0.45, 5.4, 0, K.brassD);
+  g.box(0.62, 0.9, 0.62, 0.9, 5.0, 0, '#ffd08a', 4); g.cone(0.55, 0.5, 4, 0.9, 5.9, 0, K.brass, 0, { ry: Math.PI / 4 });
+  g.box(0.7, 0.1, 0.7, 0.9, 4.9, 0, K.brassD);
+  return g.build();
+})();
+const lampBatch = new Batch(lampGeo);
+
+const brickWall = ['#b4694f', '#a95f48', '#bf7a56', '#9c5a46', '#c48a66', '#8f5240'];
+const cityTints = ['#ffffff', '#f2d8c4', '#e8bea2', '#d9ad94', '#efe0c6', '#cfa088', '#bba08e'].map((h) => new THREE.Color(h));
+function cityTint() { const c = cpick(cityTints).clone(), k = crr(0.9, 1.08); c.r *= k; c.g *= k; c.b *= k; return c; }
+
+defArc('houseA', arcHouse(11, 12, 8.5, 5.0, K.terra, K.brick));
+defArc('houseB', arcHouse(11, 12, 10.5, 4.6, K.slate, K.brick, true));
+defArc('cottage', arcHouse(9, 10, 4.8, 5.6, K.thatch, K.cream));
+defArc('town', arcTown(11, 12, 15, K.brick));
+defArc('tenement', arcTenement(14, 14, 22, K.brick));
+defArc('dock', arcTenement(14, 14, 20, K.brickD, true));
+defArc('tower', arcTower(K.brick));
+defArc('spire', arcSpire(K.brickD));
+defArc('factory', arcFactory(K.brickD));
+defArc('hall', arcHall(K.cream));
+defArc('library', arcLibrary(K.cream));
+defArc('warehouse', arcWarehouse(K.brickD));
+defArc('row', arcRow(K.brick));
+defArc('stall', arcStall());
+
+function placeBld(name, u, v, ryL, smokeScale = 1) {
+  const a = ARC[name], [wx, wz] = CITY.toWorld(u, v);
+  const sx = crr(0.94, 1.08), sy = crr(0.9, 1.16), sz = sx * crr(0.96, 1.04), ry = ryL - CITY.ROT;
+  const gy = terrainHeight(wx, wz) - 0.5;
+  cityBatch[name].add(wx, gy, wz, ry, sx, sy, sz, name === 'stall' ? new THREE.Color(cpick(['#c0392b', '#2e6f95', '#d4a72c', '#3f8a4c', '#8e4a9a'])) : cityTint());
+  const c = Math.cos(ry), s = Math.sin(ry);
+  for (const [cx, cy, cz, size] of a.chim) {
+    if (cr() >= (a.smoky ?? 0.4)) continue;
+    sootSmoke.add(wx + c * sx * cx + s * sz * cz, gy + cy * sy, wz - s * sx * cx + c * sz * cz, size * 1.5 * smokeScale, crr(55, 100) * (size > 4 ? 1.5 : 1), size > 4 ? 7 : 4, size > 4 ? 0.04 : 0.055);
+  }
+  if (a.mooring) { const [mx, my, mz] = a.mooring; cityInfo.moorings.push(new THREE.Vector3(wx + c * sx * mx + s * sz * mz, gy + my * sy, wz - s * sx * mx + c * sz * mz)); }
+  return { x: wx, y: gy, z: wz };
+}
+
+/* ---- block layout ---- */
+const splatCtx = splat.ctx;
+splatCtx.save();
+splatCtx.translate(splat.toPx(CITY.C.x), splat.toPx(CITY.C.z)); splatCtx.rotate(CITY.ROT); splatCtx.scale(splat.scale, splat.scale);
+splatCtx.fillStyle = 'rgb(98,92,86)';                                         // cobbled streets
+for (const b of CITY.blocks) splatCtx.fillRect(b.u - CITY.P / 2 - 0.6, b.v - CITY.P / 2 - 0.6, CITY.P + 1.2, CITY.P + 1.2);
+splatCtx.fillStyle = 'rgb(126,116,102)';                                      // block interiors / yards
+for (const b of CITY.blocks) splatCtx.fillRect(b.u - CITY.BLOCK / 2, b.v - CITY.BLOCK / 2, CITY.BLOCK, CITY.BLOCK);
+
+for (const b of CITY.blocks) {
+  const r = b.r, roll = cr();
+  const band = r < 150 ? 0 : r < 290 ? 1 : 2;
+  const P = [[0.28, 0.62, 0.04, 0.03, 0.03], [0.18, 0.52, 0.2, 0.05, 0.05], [0.07, 0.62, 0.15, 0.13, 0.03]][band];
+  let mode = 'quad', t = roll;
+  for (const [i, m] of ['big', 'quad', 'row', 'park', 'market'].entries()) { if (t < P[i]) { mode = m; break; } t -= P[i]; }
+  if (mode === 'big') {
+    const name = cweighted(band === 0 ? [['hall', 3.5], ['library', 3.5], ['factory', 1], ['warehouse', 2]] : band === 1 ? [['factory', 4], ['warehouse', 3], ['hall', 1.5], ['library', 1.5]] : [['warehouse', 5], ['factory', 3], ['hall', 2]]);
+    placeBld(name, b.u, b.v, Math.floor(cr() * 4) * Math.PI / 2, name === 'factory' ? 1.3 : 1);
+  } else if (mode === 'row') {
+    placeBld('row', b.u, b.v - 11, Math.PI); placeBld('row', b.u, b.v + 11, 0);
+  } else if (mode === 'park') {
+    splatCtx.fillStyle = 'rgb(88,128,64)'; splatCtx.fillRect(b.u - 17, b.v - 17, 34, 34);
+    splatCtx.fillStyle = 'rgb(150,136,110)'; splatCtx.fillRect(b.u - 2, b.v - 17, 4, 34); splatCtx.fillRect(b.u - 17, b.v - 2, 34, 4);
+    for (let k = 0; k < 20; k++) { const uu = b.u + crr(-15, 15), vv = b.v + crr(-15, 15); if (Math.abs(uu - b.u) < 3.5 || Math.abs(vv - b.v) < 3.5) continue; const [wx, wz] = CITY.toWorld(uu, vv); addCommonTree(wx, wz, cr() < 0.7 ? 'round' : 'poplar', crr(0.8, 1.2)); }
+  } else if (mode === 'market') {
+    splatCtx.fillStyle = 'rgb(150,136,112)'; splatCtx.fillRect(b.u - 17, b.v - 17, 34, 34);
+    for (let k = 0; k < 8; k++) placeBld('stall', b.u + ((k % 4) - 1.5) * 7.5, b.v + (k < 4 ? -8 : 8), k < 4 ? 0 : Math.PI);
+  } else {
+    const list = band === 0 ? [['spire', 3], ['tower', 4.5], ['town', 2], ['tenement', 3], ['dock', 0.5]]
+      : band === 1 ? [['tower', 1.5], ['tenement', 4], ['town', 3], ['houseA', 2], ['houseB', 2], ['dock', 0.4]]
+        : [['houseA', 3], ['houseB', 3], ['cottage', 4], ['town', 1], ['tenement', 0.6]];
+    for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      if (cr() < 0.06) continue;
+      const name = cweighted(list);
+      const ry = cr() < 0.5 ? (sz > 0 ? 0 : Math.PI) : (sx > 0 ? Math.PI / 2 : -Math.PI / 2);
+      placeBld(name, b.u + sx * 9 + crr(-0.6, 0.6), b.v + sz * 9 + crr(-0.6, 0.6), ry);
+    }
+  }
+  // street lamps along the +u / +v sides of the block
+  for (const [lu, lv] of [[19.3, -9], [19.3, 9], [-9, 19.3], [9, 19.3]]) {
+    const [wx, wz] = CITY.toWorld(b.u + lu, b.v + lv), gy = terrainHeight(wx, wz);
+    const lry = lu > 10 ? -CITY.ROT : -CITY.ROT - Math.PI / 2;          // lantern arm points toward the street
+    lampBatch.add(wx, gy, wz, lry, 1);
+    glowSys.add(wx + 0.9 * Math.cos(lry), gy + 5.4, wz - 0.9 * Math.sin(lry), 7.5, 1.0, 0.70, 0.34, 0);
+  }
+}
+// central plaza ground
+splatCtx.fillStyle = 'rgb(156,146,126)'; splatCtx.beginPath(); splatCtx.arc(0, 0, CITY.R0 + 3, 0, TAU); splatCtx.fill();
+splatCtx.strokeStyle = 'rgb(112,102,88)'; splatCtx.lineWidth = 1.4;
+for (const r of [30, 44, 58]) { splatCtx.beginPath(); splatCtx.arc(0, 0, r, 0, TAU); splatCtx.stroke(); }
+for (let i = 0; i < 16; i++) { const a = i / 16 * TAU; splatCtx.beginPath(); splatCtx.moveTo(Math.cos(a) * 24, Math.sin(a) * 24); splatCtx.lineTo(Math.cos(a) * (CITY.R0 + 2), Math.sin(a) * (CITY.R0 + 2)); splatCtx.stroke(); }
+splatCtx.fillStyle = 'rgb(120,110,96)'; splatCtx.beginPath(); splatCtx.arc(0, 0, 25, 0, TAU); splatCtx.fill();
+splatCtx.restore();
+for (let i = 0; i < 14; i++) {                                                  // plaza ring lamps
+  const a = i / 14 * TAU, [wx, wz] = CITY.toWorld(Math.cos(a) * 56, Math.sin(a) * 56), gy = terrainHeight(wx, wz);
+  const lry = -a - CITY.ROT;
+  lampBatch.add(wx, gy, wz, lry, 1); glowSys.add(wx + 0.9 * Math.cos(lry), gy + 5.4, wz - 0.9 * Math.sin(lry), 8, 1.0, 0.70, 0.34, 0);
+}
+
+/* ---- clock tower with procedural, back-lit clock faces ---- */
+const clockTower = (() => {
+  const g = new GB();
+  g.box(36, 3, 36, 0, 0, 0, K.stoneD); g.box(31, 3, 31, 0, 3, 0, K.stone);
+  g.box(22, 58, 22, 0, 6, 0, K.brick, 1, { grad: [0.66, 1] });
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    g.box(3.4, 60, 3.4, sx * 11, 6, sz * 11, K.stone, 0, { grad: [0.8, 1] });
+    g.box(4.2, 1.2, 4.2, sx * 11, 65.5, sz * 11, K.stoneL); g.cone(1.5, 6, 6, sx * 11, 66.7, sz * 11, K.copper);
+    g.box(4.2, 1.2, 4.2, sx * 12.5, 90.4, sz * 12.5, K.stoneL); g.cone(1.4, 7.5, 6, sx * 12.5, 91.6, sz * 12.5, K.copper);
+  }
+  g.box(23.2, 1.0, 23.2, 0, 26, 0, K.brass); g.box(23.2, 1.0, 23.2, 0, 48, 0, K.brass);
+  g.box(28, 1.8, 28, 0, 64, 0, K.brass);
+  g.box(26, 26, 26, 0, 65.8, 0, K.stone, 0, { grad: [0.85, 1] });
+  g.box(28, 1.8, 28, 0, 91.8, 0, K.brass);
+  g.box(19, 12, 19, 0, 93.6, 0, K.stoneL);
+  for (const [ang] of [[0], [1], [2], [3]]) g.box(5.5, 7.5, 0.4, 0, 95.5, 9.6, K.soot, 0, { ry: ang * Math.PI / 2 });
+  g.box(21, 1.2, 21, 0, 105.6, 0, K.brass);
+  g.frustum(21, 21, 4.5, 4.5, 22, 0, 106.8, 0, K.copper, 9);
+  g.cone(1.0, 10, 6, 0, 128.8, 0, K.brass); g.sphere(1.5, 0, 128.6, 0, K.brass); g.sphere(0.6, 0, 139.2, 0, '#ff2a1a', 4);
+  g.box(0.25, 2.4, 6, 0, 133, 0, K.iron, 0, { ry: 0.6 });
+  // brass gears & pipes -- the steampunk clockwork on the shaft
+  g.gear(6.0, 18, 1.2, 0, 40, 11.4, K.brass); g.gear(4.0, 14, 1.0, 5.4, 33, 11.5, K.brassD, { rz: 0.2 });
+  g.gear(5.0, 16, 1.2, 0, 40, -11.4, K.brass, { ry: Math.PI }); g.gear(5.0, 16, 1.2, 11.4, 38, 0, K.brass, { ry: Math.PI / 2 }); g.gear(5.0, 16, 1.2, -11.4, 38, 0, K.brass, { ry: -Math.PI / 2 });
+  for (const [sx, sz] of [[-1, -1], [1, 1]]) { g.cyl(0.55, 0.55, 54, 8, sx * 12.9, 4, sz * 12.9, K.brassD); g.cyl(0.9, 0.9, 1.0, 8, sx * 12.9, 20, sz * 12.9, K.brass); g.cyl(0.9, 0.9, 1.0, 8, sx * 12.9, 40, sz * 12.9, K.brass); }
+  const grp = new THREE.Group();
+  const gy = terrainHeight(CITY.C.x, CITY.C.z);
+  grp.position.set(CITY.C.x, gy, CITY.C.z); grp.rotation.y = -CITY.ROT;
+  const body = new THREE.Mesh(g.build(), structMat);
+  grp.add(body);
+  // clock faces: one instanced mesh of 4 quads, dial + hands drawn in the fragment shader
+  const faceU = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {}]);
+  for (const k in G) faceU[k] = G[k];
+  const faceMat = new THREE.ShaderMaterial({
+    uniforms: faceU, fog: true,
+    vertexShader: `varying vec2 vUv;
+      #include <fog_pars_vertex>
+      void main(){
+        vUv = position.xy * 2.0;
+        vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+        vec4 mvPosition = viewMatrix * wp;
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: `varying vec2 vUv; uniform float uClock; uniform float uDayLight; uniform float uNight;
+      #include <fog_pars_fragment>
+      float handMask(vec2 p, float ang, float len, float w){
+        vec2 dir = vec2(sin(ang), cos(ang));
+        float t = clamp(dot(p, dir), -0.1, len);
+        float dd = length(p - dir * t);
+        float taper = mix(1.0, 0.45, t / len);
+        return smoothstep(w * taper, w * taper * 0.55, dd);
+      }
+      void main(){
+        vec2 p = vUv; float r = length(p);
+        if (r > 1.0) discard;
+        float ang = atan(p.x, p.y);
+        vec3 dial = vec3(0.93, 0.88, 0.74);
+        vec3 col = dial;
+        float rim = smoothstep(0.89, 0.91, r);
+        col = mix(col, vec3(0.80, 0.58, 0.22), rim);
+        float a60 = abs(fract(ang / 6.2831853 * 60.0 + 0.5) - 0.5) * 6.2831853 / 60.0 * r;
+        float a12 = abs(fract(ang / 6.2831853 * 12.0 + 0.5) - 0.5) * 6.2831853 / 12.0 * r;
+        float tickM = step(a60, 0.006) * step(0.77, r) * step(r, 0.86);
+        float tickH = step(a12, 0.018) * step(0.66, r) * step(r, 0.86);
+        col = mix(col, vec3(0.10, 0.08, 0.07), max(tickM, tickH) * (1.0 - rim));
+        float ring = smoothstep(0.015, 0.0, abs(r - 0.60)) * 0.5;
+        col = mix(col, vec3(0.45, 0.33, 0.14), ring);
+        float hrAng = mod(uClock, 12.0) / 12.0 * 6.2831853;
+        float mnAng = fract(uClock) * 6.2831853;
+        float hands = max(handMask(p, hrAng, 0.50, 0.050), handMask(p, mnAng, 0.78, 0.032));
+        hands = max(hands, smoothstep(0.075, 0.06, r));
+        vec3 lit = col * (0.42 + 0.58 * uDayLight);
+        vec3 glow = col * vec3(1.0, 0.78, 0.46) * uNight * 1.15 * (1.0 - hands) * (1.0 - rim * 0.6);
+        col = mix(lit + glow, vec3(0.07, 0.06, 0.05), hands);
+        gl_FragColor = vec4(col, 1.0);
+        #include <fog_fragment>
+      }`,
+  });
+  const faces = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), faceMat, 4);
+  const dm = new THREE.Object3D();
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2; dm.position.set(Math.sin(a) * 13.25, 78.8, Math.cos(a) * 13.25); dm.rotation.set(0, a, 0); dm.scale.set(18, 18, 1);
+    dm.updateMatrix(); faces.setMatrixAt(i, dm.matrix);
+  }
+  faces.frustumCulled = false;
+  grp.add(faces);
+  grp.matrixAutoUpdate = false; grp.updateMatrix(); grp.updateMatrixWorld(true);
+  scene.add(grp);
+  cityInfo.clockPos = new THREE.Vector3(CITY.C.x, gy + 140, CITY.C.z);
+  return grp;
+})();
+updaters.push(() => { G.uClock.value = TIME.hours; });
+// glow halos around the clock faces at night
+for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 - CITY.ROT * 0 ; const lx = Math.sin(a) * 15, lz = Math.cos(a) * 15; const c = Math.cos(-CITY.ROT), s = Math.sin(-CITY.ROT); glowSys.add(CITY.C.x + lx * c + lz * s, clockTower.position.y + 78.8, CITY.C.z - lx * s + lz * c, 26, 1.0, 0.78, 0.45, 0); }
+
+/* ---- perimeter mooring masts (static, merged into one mesh) ---- */
+{
+  const g = new GB();
+  for (const ang of [-0.7, 0.55, 1.9, 3.25, 4.45]) {
+    const r = CITY.radiusAt(ang) + 14, [wx, wz] = CITY.toWorld(Math.cos(ang) * r, Math.sin(ang) * r);
+    const gy = terrainHeight(wx, wz) - 0.5;
+    const tip = addMast(g, wx, gy, wz, 64 + cr() * 12);
+    cityInfo.moorings.push(new THREE.Vector3(tip[0], tip[1], tip[2]));
+    glowSys.add(tip[0], tip[1] + 0.6, tip[2], 9, 1.0, 0.15, 0.1, 1);
+  }
+  staticMesh(g);
+}
+
+/* ======================================================================
+   9. DWARVEN HIGHLANDS (stage 4) -- factories, smelters, mines, the Great Gate
+   ====================================================================== */
+const dwR = mulberry32(5150), dr = () => dwR(), drr = (a, b) => a + (b - a) * dwR();
+const _up = new THREE.Vector3(0, 1, 0), _bd = new THREE.Vector3(), _bq = new THREE.Quaternion(), _be = new THREE.Euler();
+/* beam / pipe between two points (arrays) -- reused by walkways, cranes, bridges later */
+function beamBetween(g, a, b, t, color, kind = 0, round = false, seg = 6) {
+  _bd.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  const len = _bd.length(); if (len < 1e-4) return;
+  _bd.divideScalar(len); _bq.setFromUnitVectors(_up, _bd); _be.setFromQuaternion(_bq, 'YXZ');
+  const o = { x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2, z: (a[2] + b[2]) / 2, rx: _be.x, ry: _be.y, rz: _be.z, color, kind };
+  if (round) g.addGeo(new THREE.CylinderGeometry(t, t, len, seg, 1), o); else g.addGeo(GEO.box, { ...o, sx: t, sy: len, sz: t });
+}
+const DW_STONE = '#8e887c', DW_STONE2 = '#797367', DW_EMBER = '#ff7a1c', DW_MOLTEN = '#ff5e0c', DW_COPPER = '#b8693a', DW_SLATE = '#5a6a76';
+
+function dwStack(g, ch, fl, x, y, z, h, rb) {
+  g.cyl(rb * 0.62, rb, h, 10, x, y, z, '#857f74', 0, { grad: [0.6, 1] });
+  for (let k = 1; k <= 3; k++) g.torus(rb * (1 - k * 0.09), 0.2, x, y + h * k / 4, z, K.iron);
+  g.cyl(rb * 0.85, rb * 0.62, 1.6, 10, x, y + h, z, K.ironL);
+  g.cyl(rb * 0.5, rb * 0.5, 0.3, 10, x, y + h + 1.6, z, DW_EMBER, 5);
+  ch.push([x, y + h + 2.2, z, rb * 3.0]);
+  fl.push([x, y + h + 2.0, z, rb * 6, 1.0, 0.48, 0.14, 1]);
+}
+function arcDwSmelter() {
+  const g = new GB(), ch = [], fl = [], w = 24, d = 18, h = 12;
+  g.box(w, h + 2, d, 0, -2, 0, DW_STONE, 3, { grad: [0.6, 1] });
+  g.box(w + 1.2, 1.4, d + 1.2, 0, -2, 0, K.stoneD);
+  g.box(w + 0.8, 0.9, d + 0.8, 0, h - 0.9, 0, K.ironL);
+  g.gable(w + 1.4, d + 1.4, 4.4, 0, h, 0, '#58606c', 9);
+  for (const fx of [-7, 0, 7]) {
+    g.box(5.0, 5.6, 0.7, fx, 0, d / 2 - 0.1, K.soot);
+    g.addGeo(new THREE.CylinderGeometry(2.5, 2.5, 0.7, 12, 1), { x: fx, y: 5.6, z: d / 2 + 0.25, rx: Math.PI / 2, color: K.soot });
+    g.box(3.8, 3.8, 0.3, fx, 0.2, d / 2 + 0.45, DW_EMBER, 5);
+    g.addGeo(new THREE.CylinderGeometry(1.9, 1.9, 0.3, 12, 1), { x: fx, y: 4.0, z: d / 2 + 0.45, rx: Math.PI / 2, color: DW_EMBER, kind: 5 });
+    g.box(6, 0.5, 3, fx, 0, d / 2 + 1.6, K.ironL);
+    g.box(1.8, 0.25, 15, fx, 0.15, d / 2 + 10, DW_MOLTEN, 5);
+    fl.push([fx, 3, d / 2 + 2.8, 12, 1.0, 0.45, 0.12, 1]);
+  }
+  g.box(8, 0.25, 5, 0, 0.15, d / 2 + 18, DW_MOLTEN, 5);
+  for (const sx of [-1, 1]) dwStack(g, ch, fl, sx * 8, -2, -d / 2 - 2.5, 36, 1.9);
+  g.addGeo(new THREE.CylinderGeometry(0.55, 0.55, d + 10, 8, 1), { x: w / 2 + 1.2, y: 8, z: -2, rx: Math.PI / 2, color: K.brass });
+  g.addGeo(new THREE.CylinderGeometry(0.4, 0.4, d + 10, 8, 1), { x: w / 2 + 1.2, y: 5.6, z: -2, rx: Math.PI / 2, color: K.brassD });
+  g.gear(3.6, 14, 0.7, w / 2 + 0.4, 8.6, 3, K.brassD, { ry: Math.PI / 2 });
+  return { geo: g.build(), chim: ch, fl, rad: 17, smoky: 1.0 };
+}
+function arcDwBlast() {
+  const g = new GB(), ch = [], fl = [];
+  g.cyl(9, 10, 6, 14, 0, -2, 0, DW_STONE2);
+  g.cyl(6, 7.8, 30, 14, 0, 4, 0, '#7a7b86', 0, { grad: [0.6, 1] });
+  for (const y of [8, 15, 22, 29]) g.torus(7.2 - (y - 4) * 0.055, 0.35, 0, y, 0, K.brassD);
+  g.cyl(7.2, 6, 3, 14, 0, 34, 0, K.iron); g.cone(5.8, 5, 14, 0, 37, 0, '#3a3a40');
+  g.cyl(1.7, 2.1, 7, 8, 0, 41, 0, K.ironL); g.cyl(1.9, 1.7, 0.8, 8, 0, 48, 0, K.iron); g.cyl(1.2, 1.2, 0.3, 8, 0, 48.8, 0, DW_EMBER, 5);
+  ch.push([0, 50, 0, 6]); fl.push([0, 49.5, 0, 22, 1.0, 0.5, 0.15, 1]);
+  for (let i = 0; i < 4; i++) { const a = i / 4 * TAU + 0.4; g.box(2.8, 1.3, 0.6, Math.cos(a) * 7.0, 11, Math.sin(a) * 7.0, DW_EMBER, 5, { ry: -a + Math.PI / 2 }); fl.push([Math.cos(a) * 8.5, 11.5, Math.sin(a) * 8.5, 9, 1.0, 0.45, 0.12, 1]); }
+  for (const sx of [-1, 1]) { g.cyl(3.4, 3.6, 24, 12, sx * 12.5, -1, 3, '#555a62', 0, { grad: [0.6, 1] }); g.dome(3.4, sx * 12.5, 23, 3, K.copper); beamBetween(g, [sx * 9, 20, 2], [sx * 6.4, 14, 1], 0.8, K.brass, 0, true, 8); g.torus(3.5, 0.25, sx * 12.5, 12, 3, K.brassD); }
+  for (let i = 0; i < 9; i++) g.box(0.9, 0.3, 0.3, 0, 4 + i * 3.4, -6.3, K.ironL);
+  g.gear(4.2, 14, 0.8, 0, 6, 8, K.brassD, { ry: 0 });
+  return { geo: g.build(), chim: ch, fl, rad: 16, smoky: 1.0 };
+}
+function arcDwForge() {
+  const g = new GB(), ch = [], fl = [];
+  g.box(14, 10, 10, 0, -2, 0, DW_STONE2, 3, { grad: [0.6, 1] });
+  g.box(14.8, 1.0, 10.8, 0, -2, 0, K.stoneD);
+  g.gable(15.4, 11.4, 3.4, 0, 8, 0, '#5a626e', 9);
+  g.box(3.2, 3.8, 0.4, -2.5, 0, 5 - 0.1, DW_EMBER, 5); fl.push([-2.5, 2, 6.2, 8, 1.0, 0.45, 0.12, 1]);
+  g.box(2.0, 3.0, 0.4, 3.5, 0, 5 - 0.1, K.woodD);
+  g.box(1.6, 0.9, 1.0, 5, 0, 7, K.iron); g.box(0.9, 0.5, 1.7, 5, 0.9, 7, K.ironL);   // anvil
+  dwStack(g, ch, fl, 4, -2, -3.4, 15, 1.35);
+  g.gear(2.2, 12, 0.5, 7.3, 5, 0, K.brass, { ry: Math.PI / 2 });
+  return { geo: g.build(), chim: ch, fl, rad: 10, smoky: 0.85 };
+}
+function arcDwHouse(roofCol) {
+  const g = new GB(), ch = [], fl = [];
+  g.box(10, 9.5, 9, 0, -3, 0, DW_STONE, 3, { grad: [0.6, 1] });
+  g.box(10.8, 0.8, 9.8, 0, 5.9, 0, K.stoneD);
+  g.gable(11.4, 10.4, 3.6, 0, 6.5, 0, roofCol, 9);
+  g.box(2.0, 3.0, 0.5, 0, 0, 4.4, K.woodD);
+  g.addGeo(new THREE.CylinderGeometry(1.0, 1.0, 0.5, 10, 1), { x: 0, y: 3.0, z: 4.4, rx: Math.PI / 2, color: K.woodD });
+  g.box(3.4, 0.35, 1.6, 0, 0, 5.2, K.stone);
+  dwStack(g, ch, fl, 3, 5.6, -1.5, 5.5, 0.8);
+  return { geo: g.build(), chim: ch, fl: [], rad: 7.5, smoky: 0.5 };
+}
+function arcDwHall() {
+  const g = new GB(), ch = [], fl = [];
+  g.box(28, 15, 18, 0, -3, 0, DW_STONE, 3, { grad: [0.6, 1] });
+  g.box(29, 1.2, 19, 0, 11.2, 0, K.brass);
+  g.gable(29.6, 19.6, 6, 0, 12, 0, K.copperG ?? K.copper, 9);
+  for (const sx of [-1, 1]) { g.cyl(3.2, 3.5, 20, 10, sx * 14, -2, 8, DW_STONE2, 0, { grad: [0.6, 1] }); g.cone(4.2, 6, 10, sx * 14, 18, 8, K.copper); }
+  for (let i = 0; i < 4; i++) g.cyl(0.9, 1.05, 10, 8, -6 + i * 4, 0, 10, '#7a756c', 0, { grad: [0.7, 1] });
+  g.gable(17, 4.5, 2.6, 0, 10, 9.8, '#7a756c', 0); g.box(16, 0.8, 4, 0, 9.4, 9.6, '#7a756c');
+  g.box(5, 6, 0.5, 0, 0, 9.0, DW_EMBER, 5); fl.push([0, 3, 10.6, 11, 1.0, 0.55, 0.2, 1]);
+  g.gear(5.0, 16, 1.0, 0, 12, 9.3, K.brass);
+  dwStack(g, ch, fl, -9, 12, -4, 14, 1.4); dwStack(g, ch, fl, 9, 12, -4, 11, 1.2);
+  return { geo: g.build(), chim: ch, fl, rad: 17, smoky: 0.9 };
+}
+function arcDwGas() {
+  const g = new GB();
+  g.cyl(8.6, 9, 1.2, 18, 0, -0.6, 0, K.stoneD);
+  g.cyl(8.2, 8.2, 12, 20, 0, 0.6, 0, '#7a4d33', 0, { grad: [0.6, 1.05] }); g.dome(8.2, 0, 12.6, 0, '#7a4d33');
+  for (let i = 0; i < 10; i++) { const a = i / 10 * TAU; g.box(0.5, 22, 0.5, Math.cos(a) * 9.4, 0, Math.sin(a) * 9.4, K.ironL); }
+  for (const y of [7, 14, 21]) g.torus(9.4, 0.22, 0, y, 0, K.iron);
+  g.sphere(0.6, 0, 22.4, 0, '#ff3a1a', 4);
+  return { geo: g.build(), chim: [], fl: [], rad: 11 };
+}
+function arcDwMine() {
+  const g = new GB(), fl = [];
+  g.box(15, 11, 6, 0, -2, -1, DW_STONE, 0, { grad: [0.55, 1] });
+  g.box(6.4, 7.4, 0.7, 0, 0, 2.2, K.soot); g.addGeo(new THREE.CylinderGeometry(3.2, 3.2, 0.7, 12, 1), { x: 0, y: 7.4, z: 2.2, rx: Math.PI / 2, color: K.soot });
+  g.box(0.9, 8.0, 0.9, -3.9, 0, 2.7, K.wood); g.box(0.9, 8.0, 0.9, 3.9, 0, 2.7, K.wood); g.box(9.0, 0.9, 0.9, 0, 7.8, 2.7, K.wood);
+  beamBetween(g, [-3.9, 5.5, 2.8], [-2.4, 7.8, 2.8], 0.5, K.woodD); beamBetween(g, [3.9, 5.5, 2.8], [2.4, 7.8, 2.8], 0.5, K.woodD);
+  for (const sx of [-1, 1]) { g.sphere(0.36, sx * 4.9, 6.6, 3.1, '#ffd08a', 4); fl.push([sx * 4.9, 6.6, 3.3, 6, 1.0, 0.72, 0.35, 0]); }
+  g.box(2.4, 1.2, 1.6, 5.5, 0.7, 8, K.iron); g.cyl(0.35, 0.35, 0.3, 8, 4.7, 0.2, 7.3, K.ironL, 0, { rx: Math.PI / 2 });
+  g.ico(4.8, -9, 0.8, 4.5, '#575450', 0, { sy: 0.55 });
+  g.box(0.25, 0.25, 12, -0.9, 0.15, 9, K.iron); g.box(0.25, 0.25, 12, 0.9, 0.15, 9, K.iron);
+  return { geo: g.build(), chim: [], fl, rad: 9 };
+}
+function arcDwHead() {
+  const g = new GB(), fl = [];
+  const ap = [0, 25, 0];
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) beamBetween(g, [sx * 5.2, -1, sz * 4.5], ap, 0.7, K.ironL);
+  for (const y of [7, 14]) { const k = 1 - y / 26; g.box(10.4 * k + 1, 0.4, 0.4, 0, y, -4.5 * k, K.iron); g.box(10.4 * k + 1, 0.4, 0.4, 0, y, 4.5 * k, K.iron); }
+  g.torus(3.4, 0.32, 0, 25, 0, K.brassD, 0, { rx: 0, ry: Math.PI / 2 });
+  for (let i = 0; i < 4; i++) g.box(0.25, 6.4, 0.25, 0, 25, 0, K.brass, 0, { rx: i * Math.PI / 4 });
+  g.cyl(0.4, 0.4, 3, 8, 0, 25, 0, K.iron, 0, { rz: Math.PI / 2 });
+  g.box(7, 6, 9, 0, -1, 9, DW_STONE2, 0); g.gable(8, 10, 2.6, 0, 5, 9, '#3d4048', 9, { ry: Math.PI / 2 });
+  g.sphere(0.5, 0, 27.5, 0, '#ff3a1a', 4);
+  return { geo: g.build(), chim: [], fl, rad: 8 };
+}
+const DWA = { smelter: arcDwSmelter(), blast: arcDwBlast(), forge: arcDwForge(), houseA: arcDwHouse(DW_SLATE), houseB: arcDwHouse('#7a4a32'), hall: arcDwHall(), gas: arcDwGas(), mine: arcDwMine(), head: arcDwHead() };
+const DWB = {}; for (const k in DWA) DWB[k] = new Batch(DWA[k].geo);
+const dwTints = ['#ffffff', '#e9e0d4', '#d3c9bd', '#c4b8aa', '#efe6d8'].map((h) => new THREE.Color(h));
+const dwPlaced = [];
+function placeDw(name, x, z, ry, sc = 1, sink = 0.5) {
+  const a = DWA[name], y = terrainHeight(x, z) - sink;
+  const sx = sc * drr(0.95, 1.1), sy = sc * drr(0.95, 1.12);
+  const t = dwTints[Math.floor(dr() * dwTints.length)];
+  DWB[name].add(x, y, z, ry, sx, sy, sx, t);
+  const c = Math.cos(ry), s = Math.sin(ry);
+  const toW = (lx, ly, lz) => [x + c * sx * lx + s * sx * lz, y + ly * sy, z - s * sx * lx + c * sx * lz];
+  for (const [cx, cy, cz, size] of a.chim) { if (dr() >= (a.smoky ?? 0.5)) continue; const p = toW(cx, cy, cz); sootSmoke.add(p[0], p[1], p[2], size * sx * 1.7, drr(100, 170) * (size > 4 ? 1.3 : 1), size > 4 ? 13 : 5, 0.032); }
+  for (const [fx, fy, fz, size, r, gg, b, mode] of a.fl) { const p = toW(fx, fy, fz); glowSys.add(p[0], p[1], p[2], size * sx, r, gg, b, mode); }
+  dwPlaced.push({ x, z, r: (a.rad || 8) * sc, name });
+  return [x, y, z];
+}
+function dwFree(x, z, rad, pad = 4) { for (const p of dwPlaced) if (Math.hypot(p.x - x, p.z - z) < p.r + rad + pad) return false; return true; }
+function dwSlope(x, z) { const gx = (terrainHeight(x + 5, z) - terrainHeight(x - 5, z)) / 10, gz = (terrainHeight(x, z + 5) - terrainHeight(x, z - 5)) / 10; return [Math.hypot(gx, gz), gx, gz]; }
+const RING_R = 96;         // railway loop radius around the plateau centre
+function tryPlaceDw(name, rMin, rMax, a0 = 0, a1 = TAU, tries = 80, faceIn = true, sc = 1) {
+  const rad = (DWA[name].rad || 8) * sc;
+  for (let t = 0; t < tries; t++) {
+    const a = drr(a0, a1), r = Math.sqrt(drr(rMin * rMin, rMax * rMax));
+    const x = DW.D0.x + Math.cos(a) * r, z = DW.D0.z + Math.sin(a) * r;
+    if (Math.abs(r - RING_R) < rad + 5 || !dwFree(x, z, rad)) continue;
+    if (r > 250 && dwSlope(x, z)[0] > 0.2) continue;
+    const ry = faceIn ? Math.atan2(DW.D0.x - x, DW.D0.z - z) + drr(-0.4, 0.4) : dr() * TAU;
+    return placeDw(name, x, z, ry, sc);
+  }
+  return null;
+}
+/* industrial core */
+for (let i = 0; i < 3; i++) tryPlaceDw('blast', 8, 58, i * 2.1, i * 2.1 + 2.0, 200, false);
+for (let i = 0; i < 4; i++) tryPlaceDw('gas', 40, 85, 0, TAU, 120, false);
+for (let i = 0; i < 7; i++) tryPlaceDw('smelter', 120, 175, i * 0.9, i * 0.9 + 0.9, 200);
+for (let i = 0; i < 16; i++) tryPlaceDw('forge', 60, 215, 0, TAU, 120);
+for (let i = 0; i < 6; i++) tryPlaceDw('hall', 130, 225, 0, TAU, 150);
+for (let i = 0; i < 90; i++) tryPlaceDw(dr() < 0.6 ? 'houseA' : 'houseB', 105, 255, 0, TAU, 40, dr() < 0.7);
+for (let i = 0; i < 50; i++) tryPlaceDw(dr() < 0.6 ? 'houseA' : 'houseB', 255, 430, -2.2, 0.4, 40, true);   // terraces
+
+/* mines & head frames on the mountain flanks */
+const mineSpots = [];
+for (let t = 0; t < 6000 && mineSpots.length < 12; t++) {
+  const a = -Math.PI / 4 + drr(-1.0, 1.0), r = drr(320, 600);
+  const x = DW.F.x + Math.cos(a) * r, z = DW.F.z + Math.sin(a) * r;
+  if (x > 1450 || z < -1450) continue;
+  const h = terrainHeight(x, z); if (h < 90 || h > 300) continue;
+  const [sl, gx, gz] = dwSlope(x, z); if (sl < 0.4 || sl > 1.2) continue;
+  if (mineSpots.some((m) => Math.hypot(m.x - x, m.z - z) < 70)) continue;
+  const gl = Math.hypot(gx, gz), ry = Math.atan2(-gx / gl, -gz / gl);
+  mineSpots.push({ x, z, ry });
+  placeDw('mine', x, z, ry, 1, 1.0);
+  placeDw('head', x - Math.sin(ry) * 22 + Math.cos(ry) * 18, z - Math.cos(ry) * 22 - Math.sin(ry) * 18, ry, 1, 0.2);
+}
+
+/* pipelines (merged) -- run between industrial buildings at roof height */
+const dwStatic = new GB();
+function pipeRun(ax, az, bx, bz, hgt, r, color) {
+  const y = Math.max(terrainHeight(ax, az), terrainHeight(bx, bz)) + hgt;
+  const pts = [[ax, y, az], [bx, y, az], [bx, y, bz]];
+  for (let i = 0; i < 2; i++) {
+    const a = pts[i], b = pts[i + 1], len = Math.hypot(b[0] - a[0], b[2] - a[2]);
+    if (len < 1) continue;
+    beamBetween(dwStatic, a, b, r, color, 0, true, 8);
+    dwStatic.sphere(r * 1.5, b[0], b[1], b[2], K.brassD);
+    for (let k = 1; k * 15 < len; k++) { const f = k * 15 / len, px = lerp(a[0], b[0], f), pz = lerp(a[2], b[2], f), gy = terrainHeight(px, pz) - 0.3; dwStatic.box(0.6, y - gy, 0.6, px, gy, pz, K.iron); dwStatic.box(1.6, 0.3, 0.9, px, y - r - 0.2, pz, K.iron); }
+  }
+  for (const [px, pz] of [[ax, az], [bx, bz]]) { const gy = terrainHeight(px, pz); dwStatic.box(0.8, y - gy, 0.8, px, gy - 0.3, pz, K.iron); }
+}
+{
+  const core = dwPlaced.filter((p) => ['blast', 'smelter', 'gas', 'forge'].includes(p.name) && Math.hypot(p.x - DW.D0.x, p.z - DW.D0.z) < 190);
+  const blasts = dwPlaced.filter((p) => p.name === 'blast');
+  for (const p of core) {
+    if (p.name === 'blast' || !blasts.length) continue;
+    const t = blasts.reduce((b, q) => Math.hypot(q.x - p.x, q.z - p.z) < Math.hypot(b.x - p.x, b.z - p.z) ? q : b);
+    pipeRun(p.x, p.z, t.x + 4, t.z + 4, 19 + dr() * 3, 0.75, dr() < 0.5 ? K.brass : DW_COPPER);
+  }
+  // railway loop with sleepers, as one strip
+  const N = 150;
+  for (let i = 0; i < N; i++) {
+    const a0 = i / N * TAU, a1 = (i + 1) / N * TAU;
+    const p0 = [DW.D0.x + Math.cos(a0) * RING_R, 0, DW.D0.z + Math.sin(a0) * RING_R], p1 = [DW.D0.x + Math.cos(a1) * RING_R, 0, DW.D0.z + Math.sin(a1) * RING_R];
+    p0[1] = terrainHeight(p0[0], p0[2]) + 0.35; p1[1] = terrainHeight(p1[0], p1[2]) + 0.35;
+    const ang = Math.atan2(p1[0] - p0[0], p1[2] - p0[2]);
+    dwStatic.addGeo(GEO.box, { x: p0[0], y: p0[1] - 0.1, z: p0[2], ry: ang, sx: 3.6, sy: 0.22, sz: 0.55, color: K.woodD });
+    for (const off of [-0.85, 0.85]) {
+      const nx = Math.cos(ang) * off, nz = -Math.sin(ang) * off;
+      beamBetween(dwStatic, [p0[0] + nx, p0[1] + 0.2, p0[2] + nz], [p1[0] + nx, p1[1] + 0.2, p1[2] + nz], 0.2, K.ironL);
+    }
+  }
+}
+/* The Great Gate: a fortress carved into the mountain, facing the lowlands */
+const gate = (() => {
+  const g = new GB(), ch = [], fl = [];
+  const wallC = DW_STONE, wallH = 54;
+  g.box(110, 6, 52, 0, -6, 4, K.stoneD);
+  g.box(92, wallH, 14, 0, 0, 0, wallC, 3, { grad: [0.55, 1] });
+  g.box(94, 3, 15.6, 0, wallH - 3, 0.4, K.ironL);
+  for (let i = -15; i <= 15; i++) g.box(2.6, 3, 2.2, i * 3.05, wallH, 6, K.stoneL);
+  g.box(27, 30, 0.5, 0, 0, 7.1, K.soot); g.addGeo(new THREE.CylinderGeometry(13.5, 13.5, 0.5, 20, 1), { x: 0, y: 30, z: 7.1, rx: Math.PI / 2, color: K.soot });
+  g.box(21, 22, 0.4, 0, 0, 7.45, DW_EMBER, 5); g.addGeo(new THREE.CylinderGeometry(10.5, 10.5, 0.4, 20, 1), { x: 0, y: 22, z: 7.45, rx: Math.PI / 2, color: DW_EMBER, kind: 5 });
+  for (let i = -3; i <= 3; i++) g.box(0.9, 34, 0.5, i * 3.4, 0, 7.9, K.iron);
+  g.box(24, 1.0, 0.7, 0, 12, 7.9, K.iron); g.box(24, 1.0, 0.7, 0, 24, 7.9, K.iron);
+  fl.push([0, 10, 12, 60, 1.0, 0.45, 0.12, 1], [0, 22, 12, 40, 1.0, 0.5, 0.15, 1]);
+  for (const sx of [-1, 1]) {
+    g.cyl(2.8, 3.1, 38, 12, sx * 17.5, -1, 10, '#7a756c', 0, { grad: [0.6, 1] }); g.cyl(3.6, 3.6, 1.4, 12, sx * 17.5, 37, 10, K.brass);
+    g.cyl(10.5, 11.5, 78, 14, sx * 52, -2, 2, DW_STONE2, 3, { grad: [0.55, 1] });
+    g.cyl(12.2, 12.2, 2.4, 14, sx * 52, 74, 2, K.ironL); g.cone(11.5, 18, 14, sx * 52, 76.4, 2, K.copper);
+    for (const y of [26, 50]) g.torus(11, 0.5, sx * 52, y, 2, K.brassD);
+    for (let k = 0; k < 14; k++) { const a = k / 14 * TAU; g.box(2.4, 2.8, 2.4, sx * 52 + Math.cos(a) * 11.6, 77, 2 + Math.sin(a) * 11.6, K.stoneL, 0, { ry: -a }); }
+    // brazier
+    g.cyl(1.6, 2.4, 6, 8, sx * 24, 0, 26, K.stoneD); g.cyl(3.6, 2.2, 2.0, 12, sx * 24, 6, 26, K.iron); g.cone(2.8, 4.5, 8, sx * 24, 8, 26, DW_EMBER, 5);
+    fl.push([sx * 24, 10, 26, 22, 1.0, 0.5, 0.15, 1]);
+  }
+  g.gear(12, 26, 2.6, 0, 56, 7.6, K.brass); g.gear(5.5, 16, 1.6, -15, 48, 7.8, K.brassD); g.gear(5.5, 16, 1.6, 15, 48, 7.8, K.brassD);
+  for (const sx of [-1, 0, 1]) dwStack(g, ch, fl, sx * 26, wallH - 2, -3, 20 + (sx === 0 ? 14 : 0), 2.2);
+  for (let i = 0; i < 5; i++) g.box(40 - i * 2, 1.0 * (i + 1), 4, 0, -6, 24 + i * 4, K.stoneD);
+  const grp = new THREE.Group(), gy = terrainHeight(DW.GATE.x, DW.GATE.z);
+  grp.position.set(DW.GATE.x, gy, DW.GATE.z); grp.rotation.y = -Math.PI / 4;
+  grp.add(new THREE.Mesh(g.build(), structMat));
+  grp.matrixAutoUpdate = false; grp.updateMatrix(); grp.updateMatrixWorld(true); scene.add(grp);
+  const c = Math.cos(-Math.PI / 4), s = Math.sin(-Math.PI / 4), toW = (lx, ly, lz) => [DW.GATE.x + lx * c + lz * s, gy + ly, DW.GATE.z - lx * s + lz * c];
+  for (const [cx, cy, cz, size] of ch) { const p = toW(cx, cy, cz); sootSmoke.add(p[0], p[1], p[2], size * 1.8, 190, 14, 0.03); }
+  for (const [fx, fy, fz, size, r, gg, b, mode] of fl) { const p = toW(fx, fy, fz); glowSys.add(p[0], p[1], p[2], size, r, gg, b, mode); }
+  return grp;
+})();
+staticMesh(dwStatic);
+
+/* ground painting: slag yard, rail bed, paved plaza, paths, mine yards */
+{
+  const ctx = splat.ctx, s = splat.scale, P = (v) => splat.toPx(v);
+  ctx.save(); ctx.translate(P(DW.D0.x), P(DW.D0.z)); ctx.scale(s, s);
+  const g1 = ctx.createRadialGradient(0, 0, 150, 0, 0, 262); g1.addColorStop(0, 'rgba(72,66,60,0.92)'); g1.addColorStop(1, 'rgba(72,66,60,0)');
+  ctx.fillStyle = g1; ctx.beginPath(); ctx.arc(0, 0, 262, 0, TAU); ctx.fill();
+  for (let i = 0; i < 90; i++) { const a = dr() * TAU, r = Math.sqrt(dr()) * 230, rad = drr(18, 50); ctx.fillStyle = dr() < 0.5 ? 'rgba(40,36,33,0.14)' : 'rgba(110,100,90,0.14)'; ctx.beginPath(); ctx.arc(Math.cos(a) * r, Math.sin(a) * r, rad, 0, TAU); ctx.fill(); }
+  ctx.strokeStyle = 'rgba(32,28,26,0.9)'; ctx.lineWidth = 7; ctx.beginPath(); ctx.arc(0, 0, RING_R, 0, TAU); ctx.stroke();      // rail bed
+  ctx.fillStyle = 'rgb(98,93,86)'; ctx.beginPath(); ctx.arc(0, 0, 64, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgb(130,124,114)'; ctx.lineWidth = 2; for (const r of [24, 44]) { ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke(); }
+  ctx.strokeStyle = 'rgba(120,108,92,0.8)'; ctx.lineWidth = 6;
+  for (let i = 0; i < 8; i++) { const a = i / 8 * TAU + 0.2; ctx.beginPath(); ctx.moveTo(Math.cos(a) * 60, Math.sin(a) * 60); ctx.lineTo(Math.cos(a) * 250, Math.sin(a) * 250); ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = 'rgba(78,72,66,0.55)';
+  for (const m of mineSpots) { ctx.beginPath(); ctx.arc(P(m.x + Math.sin(m.ry) * 10), P(m.z + Math.cos(m.ry) * 10), 11 * s, 0, TAU); ctx.fill(); }
+  const gx = P(DW.GATE.x), gz = P(DW.GATE.z);
+  ctx.fillStyle = 'rgba(96,91,84,0.95)'; ctx.beginPath(); ctx.arc(gx - 26 * s, gz + 26 * s, 62 * s, 0, TAU); ctx.fill();
+}
+
+/* ======================================================================
+   10. ELVEN FOREST (stage 5) -- giant trees, towers, walkways, glowing flora
+   ====================================================================== */
+const erR = mulberry32(8080), er = () => erR(), err = (a, b) => a + (b - a) * erR();
+const EL = { bark: '#8a6e52', barkL: '#a88c68', leafA: '#3f9a52', leafB: '#5cb85e', leafC: '#2f8f66', leafD: '#9cc44e', leafE: '#4a9e90', white: '#ece8da', gold: '#dcb450', goldD: '#a8832c', wood: '#cdb98a', glassG: '#bff7d8' };
+const _pm = new THREE.Matrix4(), _pf = new THREE.Vector3(), _pr = new THREE.Vector3(), _pu = new THREE.Vector3(), _pe = new THREE.Euler();
+/* flat plank between two points; width stays horizontal (used for walkways, bridges, decks) */
+function plank(g, a, b, w, t, color, kind = 0) {
+  _pf.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  const len = _pf.length(); if (len < 1e-4) return;
+  _pf.divideScalar(len);
+  _pr.crossVectors(_up, _pf); if (_pr.lengthSq() < 1e-6) _pr.set(1, 0, 0); _pr.normalize();
+  _pu.crossVectors(_pf, _pr).normalize();
+  _pm.makeBasis(_pr, _pu, _pf); _pe.setFromRotationMatrix(_pm, 'YXZ');
+  g.addGeo(GEO.box, { x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2, z: (a[2] + b[2]) / 2, rx: _pe.x, ry: _pe.y, rz: _pe.z, sx: w, sy: t, sz: len, color, kind });
+}
+const elfTints = ['#ffffff', '#e6ffe6', '#d2f5dc', '#fff3cf', '#d8ecff'].map((h) => new THREE.Color(h));
+
+function arcElfGiant(o) {
+  const g = new GB(), anchors = [], H = o.H, R0 = o.R0, N = 6, trunkTop = H * 0.8;
+  const rAt = (y) => R0 * (1 - 0.5 * clamp((y + 5) / trunkTop, 0, 1));
+  let y = -5, cx = 0, cz = 0;
+  for (let i = 0; i < N; i++) { const h = trunkTop / N; g.cyl(rAt(y + h), rAt(y), h + 0.6, 9, cx, y, cz, EL.bark, 0, { grad: [0.8, 1.06] }); y += h; cx += Math.sin(i * 1.7 + o.seed) * 0.35; cz += Math.cos(i * 1.3 + o.seed) * 0.35; }
+  for (let i = 0; i < 6; i++) { const a = i / 6 * TAU + o.seed; beamBetween(g, [Math.cos(a) * R0 * 0.5, 9, Math.sin(a) * R0 * 0.5], [Math.cos(a) * R0 * 2.5, -3, Math.sin(a) * R0 * 2.5], R0 * 0.34, EL.bark, 0, true, 5); }
+  const by = trunkTop * 0.66;
+  for (let i = 0; i < o.nb; i++) {
+    const a = i / o.nb * TAU + o.seed * 2 + err(-0.25, 0.25), L = o.spread * err(0.8, 1.15), ex = Math.cos(a) * L, ez = Math.sin(a) * L, ey = by + err(10, 24);
+    beamBetween(g, [0, by - 6, 0], [ex * 0.55, by + 8, ez * 0.55], R0 * 0.3, EL.bark, 0, true, 6);
+    beamBetween(g, [ex * 0.55, by + 8, ez * 0.55], [ex, ey, ez], R0 * 0.2, EL.bark, 0, true, 6);
+    const rr_ = o.spread * err(0.42, 0.6);
+    g.ico(rr_, ex, ey + rr_ * 0.5, ez, o.leaf[i % o.leaf.length], 0, { sy: 0.78, grad: [0.58, 1.14] });
+    if (er() < 0.8) g.ico(rr_ * 0.62, ex * 0.72 + err(-4, 4), ey + rr_ * 0.85, ez * 0.72 + err(-4, 4), o.leaf[(i + 1) % o.leaf.length], 0, { sy: 0.8, grad: [0.58, 1.14] });
+  }
+  g.ico(o.spread * 0.62, 0, trunkTop + 4, 0, o.leaf[0], 0, { sy: 0.82, grad: [0.6, 1.14] });
+  g.ico(o.spread * 0.4, 0, trunkTop + o.spread * 0.55, 0, o.leaf[1 % o.leaf.length], 0, { sy: 0.9, grad: [0.6, 1.15] });
+  for (const f of o.platforms) {
+    const py = H * f, rt = rAt(py), pr = rt + 7.5;
+    g.cyl(pr, pr + 0.4, 0.9, 18, 0, py, 0, EL.wood, 0, { grad: [0.8, 1.05] });
+    for (let k = 0; k < 14; k++) {
+      const a = k / 14 * TAU, px = Math.cos(a) * (pr - 0.3), pz = Math.sin(a) * (pr - 0.3);
+      g.box(0.2, 1.2, 0.2, px, py + 0.9, pz, EL.goldD);
+      if (k % 3 === 0) g.box(0.5, 0.7, 0.5, px, py + 2.1, pz, EL.glassG, 4);
+    }
+    g.torus(pr - 0.3, 0.1, 0, py + 2.0, 0, EL.gold);
+    for (let k = 0; k < o.pods; k++) {
+      const a = k / o.pods * TAU + o.seed + py, rp = rt + 5.2, px = Math.cos(a) * rp, pz = Math.sin(a) * rp;
+      g.box(4.6, 4.0, 4.6, px, py + 0.9, pz, EL.white, 0, { ry: Math.PI / 2 - a, grad: [0.75, 1.0] });
+      g.cone(3.8, 3.2, 8, px, py + 4.9, pz, o.pod, 0, { grad: [0.7, 1.1] });
+      g.box(1.0, 1.8, 0.2, px + Math.cos(a) * 2.35, py + 1.9, pz + Math.sin(a) * 2.35, EL.glassG, 4, { ry: Math.PI / 2 - a });
+    }
+    for (let k = 0; k < 6; k++) { const a = k / 6 * TAU + 0.3; anchors.push([Math.cos(a) * pr, py + 1.0, Math.sin(a) * pr]); }
+  }
+  for (let k = 0; k < 7; k++) { const a = k * 2.4, yy = H * (0.1 + 0.07 * k), rr2 = rAt(yy) + 0.15; g.box(0.9, 2.4, 0.3, Math.cos(a) * rr2, yy, Math.sin(a) * rr2, EL.glassG, 4, { ry: Math.PI / 2 - a }); }
+  return { geo: g.build(), anchors, rad: o.spread * 0.8 };
+}
+function buildElfTower(H, R) {
+  const g = new GB(), anchors = [], glow = [];
+  let y = -3;
+  for (let i = 0; i < 3; i++) {
+    const h = H * (i === 0 ? 0.4 : 0.26), rb = R * (1 - i * 0.28), rt = rb * 0.8;
+    g.cyl(rt, rb, h, 12, 0, y, 0, EL.white, 2, { grad: [0.78, 1.05] });
+    g.cyl(rb + 0.5, rb + 0.8, 0.5, 12, 0, y + h - 0.2, 0, EL.gold);
+    for (let k = 0; k < 3; k++) {
+      const a = k / 3 * TAU + i * 0.9;
+      g.addGeo(new THREE.SphereGeometry(1, 8, 4), { x: Math.cos(a) * (rt + 3.2), y: y + h * 0.6, z: Math.sin(a) * (rt + 3.2), sx: 4.6, sy: 0.26, sz: 2.4, ry: -a, color: EL.wood });
+      anchors.push([Math.cos(a) * (rt + 5.2), y + h * 0.6 + 0.6, Math.sin(a) * (rt + 5.2)]);
+    }
+    y += h;
+  }
+  g.cone(R * 0.55, H * 0.3, 10, 0, y, 0, EL.gold, 0, { grad: [0.8, 1.1] });
+  const cy = y + H * 0.3;
+  g.ico(R * 0.3, 0, cy + R * 0.55, 0, '#7ff5d0', 8, { sy: 2.4 }, 0);
+  g.torus(R * 0.55, 0.14, 0, cy - 2, 0, EL.gold);
+  glow.push([0, cy + R * 0.6, 0, R * 5.0, 0.4, 1.0, 0.8, 3]);
+  return { gb: g, anchors, glow, top: cy + R };
+}
+function arcElfSmall(kind) {
+  const g = new GB();
+  g.cyl(0.26, 0.5, 6.4, 5, 0, -0.6, 0, '#b8a07c', 0, { grad: [0.7, 1] });
+  const L = [EL.leafA, EL.leafB, EL.leafC, EL.leafD, EL.leafE];
+  if (kind === 0) { g.ico(3.4, 0, 8.6, 0, L[0], 0, { sy: 1.1, grad: [0.6, 1.15] }, 0); g.ico(2.4, 1.6, 6.2, 0.8, L[1], 0, { grad: [0.6, 1.1] }, 0); g.ico(2.2, -1.5, 6.6, -0.8, L[2], 0, { grad: [0.6, 1.1] }, 0); }
+  else if (kind === 1) { g.ico(2.4, 0, 10.5, 0, L[4], 0, { sy: 2.0, grad: [0.6, 1.15] }, 0); g.ico(1.9, 0.4, 6.2, 0.3, L[2], 0, { sy: 1.4, grad: [0.6, 1.1] }, 0); }
+  else { g.ico(3.0, 0, 8.4, 0, L[3], 0, { sy: 0.8, grad: [0.6, 1.15] }, 0); g.ico(3.6, 0, 6.2, 0, L[1], 0, { sy: 0.55, grad: [0.55, 1.1] }, 0); g.ico(1.8, 0.2, 10.4, 0, L[0], 0, { grad: [0.6, 1.1] }, 0); }
+  return g.build();
+}
+const elfGiantDefs = [
+  { H: 108, R0: 6.5, nb: 6, spread: 30, seed: 1.1, leaf: [EL.leafA, EL.leafB, EL.leafC], platforms: [0.26, 0.46], pods: 3, pod: EL.gold },
+  { H: 138, R0: 5.2, nb: 5, spread: 24, seed: 2.3, leaf: [EL.leafC, EL.leafE, EL.leafD], platforms: [0.22, 0.40, 0.58], pods: 2, pod: EL.leafC },
+  { H: 86, R0: 9.0, nb: 7, spread: 38, seed: 3.7, leaf: [EL.leafB, EL.leafD, EL.leafA], platforms: [0.28, 0.5], pods: 4, pod: EL.goldD },
+];
+const ELG = elfGiantDefs.map((d) => arcElfGiant(d)), ELGB = ELG.map((a) => new Batch(a.geo));
+const ELTW = (() => { const t = buildElfTower(86, 5.6); return { geo: t.gb.build(), anchors: t.anchors, glow: t.glow, rad: 9 }; })();
+const ELTWB = new Batch(ELTW.geo);
+const ELS = [arcElfSmall(0), arcElfSmall(1), arcElfSmall(2)], ELSB = ELS.map((g) => new Batch(g));
+const bushGeo = (() => { const g = new GB(); g.ico(1.5, 0, 0.8, 0, '#3f8f4a', 0, { sy: 0.7, grad: [0.55, 1.1] }, 0); g.ico(1.1, 1.2, 0.6, 0.5, '#58a850', 0, { sy: 0.7 }, 0); g.ico(1.0, -0.9, 0.6, -0.7, '#2f7a46', 0, { sy: 0.7 }, 0); return g.build(); })();
+const bushB = new Batch(bushGeo);
+const shroomGeo = (() => { const g = new GB(); g.cyl(0.12, 0.18, 0.9, 5, 0, 0, 0, '#d8e8d4'); g.ico(0.55, 0, 1.0, 0, '#5ff0d0', 8, { sy: 0.6 }, 0); return g.build(); })();
+const shroomB = new Batch(shroomGeo);
+
+const elfNodes = [];                                 // anchors for walkways: {x,y,z,r,anchors}
+const elfAt = (a, x, z, ry, s) => { const y = terrainHeight(x, z), c = Math.cos(ry), sn = Math.sin(ry); return { x, y, z, r: a.rad, anchors: a.anchors.map(([ax, ay, az]) => [x + (c * ax + sn * az) * s, y + ay * s, z + (-sn * ax + c * az) * s]) }; };
+const elfOK = (x, z) => riverDist(x, z) > 110 && x < -140 && z < -140 && x > -1330 && z > -1330 && dwSlope(x, z)[0] < 0.4;
+
+/* the palace: a cluster of crystal spires on the central hill */
+{
+  const pal = new GB(), py = terrainHeight(EC.x, EC.z);
+  for (const [r, h] of [[62, 3], [48, 3], [36, 3]]) pal.cyl(r, r + 1.5, h, 28, 0, (r === 62 ? 0 : r === 48 ? 3 : 6) - 3, 0, EL.white, 0, { grad: [0.8, 1.05] });
+  const mainT = buildElfTower(176, 11), nodes = [];
+  pal.addGB(mainT.gb, { x: 0, y: 4, z: 0 });
+  elfNodes.push({ x: EC.x, y: py, z: EC.z, r: 14, anchors: mainT.anchors.map(([ax, ay, az]) => [EC.x + ax, py + 4 + ay, EC.z + az]) });
+  glowSys.add(EC.x, py + 4 + mainT.top, EC.z, 64, 0.4, 1.0, 0.8, 3);
+  for (let i = 0; i < 5; i++) {
+    const a = i / 5 * TAU + 0.3, px = Math.cos(a) * 34, pz = Math.sin(a) * 34, t = buildElfTower(96 + (i % 3) * 14, 6.4);
+    pal.addGB(t.gb, { x: px, y: 4, z: pz });
+    elfNodes.push({ x: EC.x + px, y: py, z: EC.z + pz, r: 8, anchors: t.anchors.map(([ax, ay, az]) => [EC.x + px + ax, py + 4 + ay, EC.z + pz + az]) });
+    glowSys.add(EC.x + px, py + 4 + t.top, EC.z + pz, 30, 0.4, 1.0, 0.8, 3);
+  }
+  pal.torus(20, 0.9, 0, 128, 0, EL.gold, 0, { rx: 0.5 }); pal.torus(24, 0.9, 0, 134, 0, EL.gold, 0, { rx: -0.45, ry: 0.8 }); pal.torus(28, 0.7, 0, 118, 0, EL.goldD, 0, { rx: 0.2, ry: -0.5 });
+  const m = new THREE.Mesh(pal.build(), structMat);
+  m.position.set(EC.x, py, EC.z); m.matrixAutoUpdate = false; m.updateMatrix(); scene.add(m);
+}
+/* giant trees (Poisson-ish placement) */
+const giantPts = [];
+for (let t = 0; t < 9000 && giantPts.length < 86; t++) {
+  const a = err(0, TAU), d = 85 + Math.sqrt(er()) * 520, x = EC.x + Math.cos(a) * d, z = EC.z + Math.sin(a) * d;
+  if (!elfOK(x, z) || er() > 1 - smoothstep(280, 620, d) * 0.7) continue;
+  if (giantPts.some((p) => Math.hypot(p.x - x, p.z - z) < 46) || Math.hypot(x - EC.x, z - EC.z) < 85) continue;
+  const vi = Math.floor(er() * 3), s = err(0.85, 1.2), ry = er() * TAU;
+  ELGB[vi].add(x, terrainHeight(x, z) - 1.0, z, ry, s, s * err(0.95, 1.1), s, elfTints[Math.floor(er() * elfTints.length)]);
+  const nd = elfAt(ELG[vi], x, z, ry, s); nd.y -= 1; giantPts.push({ x, z, r: ELG[vi].rad * s * 0.45 }); elfNodes.push(nd);
+}
+/* towers */
+const towerPts = [];
+for (let t = 0; t < 9000 && towerPts.length < 26; t++) {
+  const a = err(0, TAU), d = 110 + Math.sqrt(er()) * 430, x = EC.x + Math.cos(a) * d, z = EC.z + Math.sin(a) * d;
+  if (!elfOK(x, z)) continue;
+  if (giantPts.some((p) => Math.hypot(p.x - x, p.z - z) < 30) || towerPts.some((p) => Math.hypot(p.x - x, p.z - z) < 55) || Math.hypot(x - EC.x, z - EC.z) < 100) continue;
+  const s = err(0.8, 1.25), ry = er() * TAU;
+  ELTWB.add(x, terrainHeight(x, z) - 0.5, z, ry, s, s, s, elfTints[Math.floor(er() * 2)]);
+  const nd = elfAt(ELTW, x, z, ry, s); towerPts.push({ x, z }); elfNodes.push(nd);
+  for (const [gx, gy, gz, size, r, gg, b, mode] of ELTW.glow) { const c = Math.cos(ry), sn = Math.sin(ry); glowSys.add(x + (c * gx + sn * gz) * s, nd.y + gy * s, z + (-sn * gx + c * gz) * s, size * s, r, gg, b, mode); }
+}
+/* suspended walkways between nodes */
+const elfWalk = new GB(), walkKeys = new Set();
+let walkCount = 0;
+function buildWalkway(A, B) {
+  const nearest = (nd, o) => nd.anchors.reduce((best, p) => (Math.hypot(p[0] - o.x, p[1] - o.y, p[2] - o.z) < Math.hypot(best[0] - o.x, best[1] - o.y, best[2] - o.z) ? p : best), nd.anchors[0]);
+  const pa = nearest(A, B), pb = nearest(B, A);
+  const dx = pb[0] - pa[0], dz = pb[2] - pa[2], dy = pb[1] - pa[1], hl = Math.hypot(dx, dz), len = Math.hypot(hl, dy);
+  if (hl < 30 || Math.abs(dy) > hl * 0.3) return;
+  const n = Math.max(4, Math.ceil(len / 6)), sag = 0.035 * len + 1.0, pts = [];
+  for (let k = 0; k <= n; k++) { const t = k / n; pts.push([pa[0] + dx * t, pa[1] + dy * t - sag * 4 * t * (1 - t), pa[2] + dz * t]); }
+  const px = -dz / hl * 1.7, pz = dx / hl * 1.7;
+  for (let k = 0; k < n; k++) {
+    const a = pts[k], b = pts[k + 1];
+    plank(elfWalk, a, b, 3.4, 0.3, EL.wood);
+    for (const sgn of [-1, 1]) beamBetween(elfWalk, [a[0] + px * sgn, a[1] + 1.05, a[2] + pz * sgn], [b[0] + px * sgn, b[1] + 1.05, b[2] + pz * sgn], 0.14, EL.goldD);
+    if (k % 2 === 0) for (const sgn of [-1, 1]) {
+      elfWalk.box(0.14, 1.1, 0.14, a[0] + px * sgn, a[1], a[2] + pz * sgn, EL.goldD);
+      if (k % 4 === 0 && sgn === 1) { elfWalk.box(0.5, 0.7, 0.5, a[0] + px * sgn, a[1] + 1.35, a[2] + pz * sgn, EL.glassG, 4); glowSys.add(a[0] + px * sgn, a[1] + 1.7, a[2] + pz * sgn, 5.5, 0.5, 1.0, 0.78, 0); }
+    }
+  }
+  walkCount++;
+}
+for (let i = 0; i < elfNodes.length; i++) {
+  const A = elfNodes[i], near = elfNodes.map((B, j) => [Math.hypot(A.x - B.x, A.z - B.z), j]).filter(([d, j]) => j !== i && d > 38 && d < 190).sort((p, q) => p[0] - q[0]).slice(0, 2);
+  for (const [, j] of near) { const key = i < j ? i + '_' + j : j + '_' + i; if (walkKeys.has(key)) continue; walkKeys.add(key); buildWalkway(A, elfNodes[j]); }
+}
+staticMesh(elfWalk);
+/* undergrowth: small trees, bushes, glowing mushrooms */
+const nearNode = (x, z, pad) => { for (const p of giantPts) if (Math.hypot(p.x - x, p.z - z) < p.r + pad) return true; for (const p of towerPts) if (Math.hypot(p.x - x, p.z - z) < 9 + pad) return true; return Math.hypot(x - EC.x, z - EC.z) < 70; };
+let smallN = 0, bushN = 0, shroomN = 0;
+for (let t = 0; t < 14000 && smallN < 2300; t++) {
+  const a = err(0, TAU), d = Math.sqrt(er()) * 760, x = EC.x + Math.cos(a) * d, z = EC.z + Math.sin(a) * d;
+  if (x > -90 || z > -90 || riverDist(x, z) < 95 || x < -1340 || z < -1340) continue;
+  const dens = (1 - smoothstep(400, 780, d)) * (0.45 + 0.55 * (noise2(x * 0.01 + 5, z * 0.01) * 0.5 + 0.5));
+  if (er() > dens || nearNode(x, z, 3) || dwSlope(x, z)[0] > 0.55) continue;
+  const s = err(0.8, 1.5), k = Math.floor(er() * 3);
+  ELSB[k].add(x, terrainHeight(x, z), z, er() * TAU, s, s * err(0.9, 1.25), s, elfTints[Math.floor(er() * elfTints.length)]); smallN++;
+  if (er() < 0.3 && bushN < 700) { const bx = x + err(-5, 5), bz = z + err(-5, 5); if (!nearNode(bx, bz, 1)) { bushB.add(bx, terrainHeight(bx, bz), bz, er() * TAU, err(0.8, 1.6)); bushN++; } }
+  if (er() < 0.22 && shroomN < 900) { const sx2 = x + err(-6, 6), sz2 = z + err(-6, 6); if (!nearNode(sx2, sz2, 1)) { const s2 = err(0.8, 2.2); shroomB.add(sx2, terrainHeight(sx2, sz2), sz2, er() * TAU, s2, s2, s2, new THREE.Color().setHSL(err(0.42, 0.52), 0.8, err(0.6, 0.8))); shroomN++; } }
+}
+/* forest floor painting: shadows under the great trees, paths */
+{
+  const ctx = splat.ctx, P = splat.toPx, s = splat.scale;
+  for (const p of giantPts) { const g1 = ctx.createRadialGradient(P(p.x), P(p.z), 2, P(p.x), P(p.z), 34 * s); g1.addColorStop(0, 'rgba(22,44,26,0.62)'); g1.addColorStop(1, 'rgba(22,44,26,0)'); ctx.fillStyle = g1; ctx.beginPath(); ctx.arc(P(p.x), P(p.z), 34 * s, 0, TAU); ctx.fill(); }
+  ctx.strokeStyle = 'rgba(176,160,120,0.55)'; ctx.lineWidth = 3.2 * s; ctx.lineCap = 'round';
+  for (let i = 0; i < elfNodes.length; i += 3) { const A = elfNodes[i], B = elfNodes[(i + 7) % elfNodes.length]; if (Math.hypot(A.x - B.x, A.z - B.z) > 260) continue; ctx.beginPath(); ctx.moveTo(P(A.x), P(A.z)); ctx.quadraticCurveTo(P((A.x + B.x) / 2 + 20), P((A.z + B.z) / 2 - 20), P(B.x), P(B.z)); ctx.stroke(); }
+  const g2 = ctx.createRadialGradient(P(EC.x), P(EC.z), 20 * s, P(EC.x), P(EC.z), 80 * s); g2.addColorStop(0, 'rgba(216,222,208,0.95)'); g2.addColorStop(1, 'rgba(216,222,208,0)'); ctx.fillStyle = g2; ctx.beginPath(); ctx.arc(P(EC.x), P(EC.z), 80 * s, 0, TAU); ctx.fill();
+}
+
+/* ======================================================================
+   11. ORC WASTES (stage 6) -- scrap junkyards, welded huts, bonfires, rusty cranes
+   ====================================================================== */
+const orR = mulberry32(6666), orn = () => orR(), orr = (a, b) => a + (b - a) * orR();
+const OR = { rust: '#8a4a28', rust2: '#a85c30', rustD: '#5e321c', iron: '#4c4c52', ironL: '#6e6e76', scrap: '#7a6a58', bone: '#ddd2b4', red: '#a8281a', wood: '#5e422b', oil: '#26211e', yellow: '#b98a24' };
+const orcPick = (arr) => arr[Math.floor(orn() * arr.length)];
+const orcJunkCols = ['#8a4a28', '#a85c30', '#5e321c', '#6e6e76', '#4c4c52', '#7a6a58', '#9a7040', '#3a3a3e', '#7a3a24'];
+const rrot = () => ({ rx: orr(0, TAU), ry: orr(0, TAU), rz: orr(0, TAU) });
+
+function orcHut(variant) {
+  const g = new GB(), ch = [], fl = [];
+  const w = orr(6.5, 8.5), d = orr(5.5, 7), h = orr(4.0, 5.2);
+  g.box(w, h + 1, d, 0, -1, 0, OR.rust, 6, { grad: [0.6, 1] });
+  g.gable(w + 1.4, d + 1.2, 1.7, 0, h, 0, OR.ironL, 0, { ry: variant ? Math.PI / 2 : 0 });
+  for (let i = 0; i < 6; i++) g.box(orr(1.4, 2.8), orr(1, 1.9), 0.15, orr(-w / 2 + 1.5, w / 2 - 1.5), orr(0.8, h - 1.2), d / 2 + 0.08, orcPick(orcJunkCols), 0, { rz: orr(-0.08, 0.08) });
+  g.box(1.6, 2.6, 0.2, orr(-1.5, 1.5), 0, d / 2 + 0.12, OR.wood);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) g.cone(0.28, orr(1.2, 2.2), 5, sx * w / 2, h + 0.7, sz * d / 2, OR.bone);
+  g.sphere(0.55, 0, h + 2.3, d / 2 - 0.4, OR.bone); g.cone(0.22, 1.2, 5, -0.6, h + 2.7, d / 2 - 0.4, OR.bone, 0, { rz: 0.8 }); g.cone(0.22, 1.2, 5, 0.6, h + 2.7, d / 2 - 0.4, OR.bone, 0, { rz: -0.8 });
+  g.box(0.22, 0.22, 0.12, -0.2, h + 2.35, d / 2 - 0.0, DW_EMBER, 5); g.box(0.22, 0.22, 0.12, 0.2, h + 2.35, d / 2 - 0.0, DW_EMBER, 5);
+  g.cyl(0.38, 0.38, 3.6, 6, -w * 0.3, h - 0.5, -d * 0.2, OR.iron); g.cone(0.6, 0.5, 6, -w * 0.3, h + 3.1, -d * 0.2, OR.rustD);
+  ch.push([-w * 0.3, h + 3.8, -d * 0.2, 2.0]);
+  g.box(0.5, 0.5, 0.5, w / 2 - 0.4, 1.8, d / 2 + 0.35, DW_EMBER, 5); fl.push([w / 2 - 0.4, 2.0, d / 2 + 0.7, 7, 1.0, 0.45, 0.12, 1]);
+  return { geo: g.build(), chim: ch, fl, rad: 6.5, smoky: 0.5 };
+}
+function orcTower() {
+  const g = new GB(), fl = [], ch = [];
+  const H = 17;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) beamBetween(g, [sx * 3.6, -1, sz * 3.6], [sx * 2.2, H, sz * 2.2], 0.38, OR.rustD, 0, true, 5);
+  for (const y of [4, 9, 14]) { const k = 3.6 - (y / H) * 1.4; for (const sg of [-1, 1]) { beamBetween(g, [-k, y, sg * k], [k, y + 4, sg * k], 0.22, OR.iron); beamBetween(g, [sg * k, y, -k], [sg * k, y + 4, k], 0.22, OR.iron); } }
+  g.box(8, 0.5, 8, 0, H, 0, OR.wood);
+  g.box(5.4, 3.6, 5.4, 0, H + 0.5, 0, OR.rust, 6);
+  g.gable(6.4, 6.4, 1.6, 0, H + 4.1, 0, OR.ironL, 0);
+  for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + 0.78; g.cone(0.32, 2, 5, Math.cos(a) * 4, H + 0.8, Math.sin(a) * 4, OR.bone); }
+  g.cyl(0.9, 0.5, 1, 8, 0, H + 6.0, 0, OR.iron); g.cone(0.9, 2.2, 6, 0, H + 7, 0, DW_EMBER, 5);
+  fl.push([0, H + 8, 0, 15, 1.0, 0.5, 0.14, 1]); ch.push([0, H + 9.6, 0, 2.5]);
+  return { geo: g.build(), chim: ch, fl, rad: 6, smoky: 1 };
+}
+function orcCrane() {
+  const g = new GB();
+  const H = 38, W = 1.7;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) g.box(0.55, H, 0.55, sx * W, 0, sz * W, OR.rust2, 0, { grad: [0.7, 1] });
+  const th = Math.atan2(6, 2 * W), len = Math.hypot(2 * W, 6);
+  for (let i = 0; i <= 6; i++) { const y = i * 6; for (const sg of [-1, 1]) { g.box(2 * W + 0.4, 0.3, 0.3, 0, y, sg * W, OR.rustD); g.box(0.3, 0.3, 2 * W + 0.4, sg * W, y, 0, OR.rustD); } if (i < 6) { const s = i % 2 ? 1 : -1; g.addGeo(GEO.box, { y: y + 3, z: -W, rz: s * th, sx: len, sy: 0.24, sz: 0.24, color: OR.rustD }); g.addGeo(GEO.box, { y: y + 3, z: W, rz: -s * th, sx: len, sy: 0.24, sz: 0.24, color: OR.rustD }); g.addGeo(GEO.box, { x: -W, y: y + 3, rx: s * th, sx: 0.24, sy: 0.24, sz: len, color: OR.rustD }); g.addGeo(GEO.box, { x: W, y: y + 3, rx: -s * th, sx: 0.24, sy: 0.24, sz: len, color: OR.rustD }); } }
+  g.box(4.2, 3.2, 4.2, 0, H, 0, OR.rust, 6); g.box(4.6, 0.4, 4.6, 0, H + 3.2, 0, OR.iron);
+  // jib (along +x) and counter jib
+  const JL = 34;
+  for (const sg of [-1, 1]) { beamBetween(g, [0, H + 4, sg * 0.9], [JL, H + 2.4, sg * 0.5], 0.3, OR.yellow); }
+  beamBetween(g, [0, H + 6, 0], [JL, H + 2.4, 0], 0.26, OR.yellow);
+  for (let i = 0; i < 10; i++) { const x0 = i * JL / 10, x1 = (i + 1) * JL / 10; const yy = (x) => H + 4 - 1.6 * x / JL; beamBetween(g, [x0, yy(x0), -0.8], [x1, yy(x1) + 0.0, 0.8], 0.16, OR.rustD); }
+  for (const sg of [-1, 1]) beamBetween(g, [0, H + 4, sg * 0.9], [-12, H + 4, sg * 0.9], 0.3, OR.yellow);
+  g.box(3.4, 3, 2.6, -11, H + 1.5, 0, '#3a3430'); g.box(2.4, 2, 2, -8, H + 2, 0, '#4a423a');
+  g.box(0.14, 20, 0.14, JL - 3, H - 16.6, 0, OR.iron);
+  g.cyl(2.0, 2.2, 0.9, 10, JL - 3, H - 17.5, 0, OR.oil); g.cyl(0.4, 0.4, 0.8, 6, JL - 3, H - 16.7, 0, OR.iron);
+  g.box(1.2, 0.7, 1.0, JL - 3.6, H - 18.4, 0.3, OR.rust2, 0, { rx: 0.3, ry: 0.4 }); g.box(0.8, 0.5, 1.3, JL - 2.2, H - 18.2, -0.2, OR.ironL, 0, { rz: 0.4 });
+  g.sphere(0.35, 0, H + 6.4, 0, '#ff3a1a', 4);
+  return { geo: g.build(), chim: [], fl: [], rad: 6 };
+}
+function orcJunk(seed) {
+  const g = new GB(), R = orr(6, 9.5);
+  g.ico(R, 0, 0, 0, '#5b4a3c', 0, { sy: 0.46, grad: [0.55, 1] }, 1);
+  const n = Math.floor(R * 3.4);
+  for (let i = 0; i < n; i++) {
+    const a = orr(0, TAU), rad = Math.sqrt(orn()) * R * 0.88, x = Math.cos(a) * rad, z = Math.sin(a) * rad, y = (1 - (rad / R) ** 2) * R * 0.42 + orr(-0.2, 1.1), t = orn(), col = orcPick(orcJunkCols);
+    if (t < 0.3) g.addGeo(GEO.box, { x, y, z, ...rrot(), sx: orr(1, 3.8), sy: orr(0.5, 2.4), sz: orr(1, 3.2), color: col });
+    else if (t < 0.5) g.addGeo(new THREE.CylinderGeometry(0.32, 0.32, orr(3, 7), 6, 1), { x, y, z, ...rrot(), color: orcPick([OR.iron, OR.ironL, OR.rust]) });
+    else if (t < 0.65) g.addGeo(new THREE.TorusGeometry(0.9, 0.38, 5, 10), { x, y, z, ...rrot(), color: '#1d1d20' });
+    else if (t < 0.8) g.addGeo(new THREE.CylinderGeometry(0.8, 0.8, 1.6, 8, 1), { x, y, z, ...rrot(), color: orcPick([OR.rust2, '#2f4a6a', OR.red, OR.rust]) });
+    else if (t < 0.92) g.addGeo(GEO.box, { x, y: y + 0.4, z, rx: orr(-0.7, 0.7), ry: orr(0, TAU), rz: orr(-0.7, 0.7), sx: orr(2.5, 4.5), sy: 0.12, sz: orr(1.5, 3), color: col });
+    else g.addGeo(new THREE.ConeGeometry(0.2, orr(2, 4), 5, 1), { x, y: y + 1, z, rx: orr(-0.6, 0.6), rz: orr(-0.6, 0.6), color: OR.iron });
+  }
+  return { geo: g.build(), rad: R * 0.95 };
+}
+function orcBarrel() { const g = new GB(); g.cyl(0.45, 0.45, 1.2, 8, 0, 0, 0, '#ffffff', 0, { grad: [0.7, 1] }); g.torus(0.46, 0.05, 0, 0.3, 0, '#3a3a3e'); g.torus(0.46, 0.05, 0, 0.9, 0, '#3a3a3e'); return g.build(); }
+function orcWreck() {
+  const g = new GB();
+  g.box(4.4, 1.0, 1.9, 0, 0.35, 0, OR.rust, 0, { grad: [0.6, 1] }); g.box(2.3, 0.9, 1.7, -0.2, 1.35, 0, OR.rust2); g.box(2.0, 0.5, 1.5, -0.2, 2.2, 0, '#2a3238');
+  g.addGeo(new THREE.CylinderGeometry(0.45, 0.45, 0.35, 8, 1), { x: 1.4, y: 0.45, z: 1.0, rx: Math.PI / 2, color: '#1d1d20' }); g.addGeo(new THREE.CylinderGeometry(0.45, 0.45, 0.35, 8, 1), { x: -1.4, y: 0.45, z: -1.0, rx: Math.PI / 2, color: '#1d1d20' });
+  g.box(1.4, 0.15, 1.0, 1.7, 0.85, 0, OR.rustD, 0, { rz: 0.3 });
+  return g.build();
+}
+function orcTires() { const g = new GB(); for (let i = 0; i < 3; i++) g.torus(0.9, 0.38, 0, 0.4 + i * 0.75, 0, '#1d1d20'); return g.build(); }
+function orcTotem() {
+  const g = new GB(), fl = [];
+  g.cyl(0.35, 0.5, 12, 6, 0, -0.5, 0, OR.wood, 0, { grad: [0.6, 1] });
+  g.sphere(0.85, 0, 12.3, 0, OR.bone, 0, { sy: 1.1 }); g.cone(0.3, 2.2, 5, -0.9, 13, 0, OR.bone, 0, { rz: 0.9 }); g.cone(0.3, 2.2, 5, 0.9, 13, 0, OR.bone, 0, { rz: -0.9 });
+  g.box(0.3, 0.3, 0.2, -0.3, 12.4, 0.7, DW_EMBER, 5); g.box(0.3, 0.3, 0.2, 0.3, 12.4, 0.7, DW_EMBER, 5);
+  g.box(0.12, 4, 2.4, 0, 6.5, 1.3, OR.red); g.box(2.2, 0.18, 0.18, 0, 10.3, 0, OR.iron);
+  for (let i = 0; i < 6; i++) { const a = i / 6 * TAU; g.cone(0.22, 1.6, 5, Math.cos(a) * 0.5, 1.5 + i * 1.2, Math.sin(a) * 0.5, OR.bone, 0, { rz: Math.cos(a) * 1.1, rx: -Math.sin(a) * 1.1 }); }
+  fl.push([0, 12.4, 0.8, 7, 1.0, 0.3, 0.1, 1]);
+  return { geo: g.build(), fl, rad: 2.5 };
+}
+function orcBonfire() {
+  const g = new GB(), fl = [], ch = [];
+  for (let i = 0; i < 9; i++) { const a = i / 9 * TAU; g.ico(0.55, Math.cos(a) * 2.2, 0.35, Math.sin(a) * 2.2, '#6e6a64', 0, { sy: 0.7 }, 0); }
+  for (let i = 0; i < 6; i++) { const a = i / 6 * TAU; g.addGeo(new THREE.CylinderGeometry(0.22, 0.26, 3.4, 6, 1), { x: Math.cos(a) * 0.7, y: 1.3, z: Math.sin(a) * 0.7, rz: Math.cos(a) * 0.7, rx: -Math.sin(a) * 0.7, color: OR.wood }); }
+  g.cone(1.3, 3.2, 6, 0, 0.7, 0, DW_EMBER, 5); g.cone(0.8, 4.4, 5, 0, 0.9, 0, '#ffd060', 5, { ry: 0.6 });
+  fl.push([0, 2.4, 0, 24, 1.0, 0.5, 0.14, 1]); ch.push([0, 5.2, 0, 2.6]);
+  return { geo: g.build(), fl, chim: ch, rad: 3.5, smoky: 1 };
+}
+function orcPalisade() {
+  const g = new GB();
+  for (let i = 0; i < 7; i++) { const h = orr(5, 7.4), x = (i - 3) * 1.55; g.box(0.7, h, 0.5, x, -0.5, orr(-0.15, 0.15), orcPick([OR.wood, '#6e5238', '#4a3624']), 0, { grad: [0.6, 1] }); g.cone(0.5, 1.4, 4, x, h - 0.5, 0, orcPick([OR.wood, OR.bone]), 0, { ry: Math.PI / 4 }); }
+  g.box(11, 0.35, 0.35, 0, 2.2, 0.4, OR.iron); g.box(11, 0.35, 0.35, 0, 4.2, 0.4, OR.iron);
+  g.box(0.9, 0.9, 0.3, orr(-3, 3), orr(2.6, 3.8), 0.5, OR.red);
+  return { geo: g.build(), rad: 5.5 };
+}
+function dead(kind) {
+  const g = new GB();
+  g.cyl(0.25, 0.5, 6.2, 5, 0, -0.5, 0, '#2c2622');
+  for (let i = 0; i < 4; i++) { const a = i * 1.9 + kind; beamBetween(g, [0, 3 + i * 0.8, 0], [Math.cos(a) * orr(1.6, 2.8), 5.2 + i * 1.2, Math.sin(a) * orr(1.6, 2.8)], 0.12, '#2c2622', 0, true, 4); }
+  return g.build();
+}
+const orcRockGeo = (() => { const g = new GB(); g.ico(2.2, 0, 0.8, 0, '#7e5c48', 0, { sy: 0.7, grad: [0.55, 1.05] }, 0); g.ico(1.4, 1.8, 0.4, 0.6, '#6e5040', 0, { sy: 0.7 }, 0); return g.build(); })();
+
+const ORCA = { hutA: orcHut(0), hutB: orcHut(1), tower: orcTower(), crane: orcCrane(), tot: orcTotem(), fire: orcBonfire(), pal: orcPalisade() };
+const ORCJ = [orcJunk(1), orcJunk(2), orcJunk(3), orcJunk(4), orcJunk(5)];
+const ORB = {}; for (const k in ORCA) ORB[k] = new Batch(ORCA[k].geo);
+const ORJB = ORCJ.map((a) => new Batch(a.geo)), barrelB = new Batch(orcBarrel()), wreckB = new Batch(orcWreck()), tiresB = new Batch(orcTires());
+const deadB = [new Batch(dead(0)), new Batch(dead(1))], rockB = new Batch(orcRockGeo);
+const orcPlaced = [];
+const orcFree = (x, z, r, pad = 3) => { for (const p of orcPlaced) if (Math.hypot(p.x - x, p.z - z) < p.r + r + pad) return false; return true; };
+const orcTints = ['#ffffff', '#e9d2c0', '#d6b9a0', '#f0dcc8', '#c9a890'].map((h) => new THREE.Color(h));
+function placeOrc(name, x, z, ry, sc = 1, sink = 0.4, listRad = null) {
+  const a = ORCA[name], y = terrainHeight(x, z) - sink, s = sc * orr(0.92, 1.1);
+  ORB[name].add(x, y, z, ry, s, s * orr(0.95, 1.1), s, orcTints[Math.floor(orn() * orcTints.length)]);
+  const c = Math.cos(ry), sn = Math.sin(ry), toW = (lx, ly, lz) => [x + (c * lx + sn * lz) * s, y + ly * s, z + (-sn * lx + c * lz) * s];
+  for (const [cx, cy, cz, size] of a.chim || []) { if (orn() >= (a.smoky ?? 0.5)) continue; const p = toW(cx, cy, cz); sootSmoke.add(p[0], p[1], p[2], size * s * 1.7, orr(70, 120), 6, 0.04); }
+  for (const [fx, fy, fz, size, r, g2, b, mode] of a.fl || []) { const p = toW(fx, fy, fz); glowSys.add(p[0], p[1], p[2], size * s, r, g2, b, mode); }
+  orcPlaced.push({ x, z, r: (listRad ?? a.rad ?? 5) * s });
+}
+/* The Maw: the orc warlord's welded fortress at the centre of the yard */
+const orcFort = (() => {
+  const g = new GB(), ch = [], fl = [];
+  g.box(58, 3, 44, 0, -3, 0, '#3e3028');
+  g.box(40, 18, 26, 0, 0, 0, OR.rust, 6, { grad: [0.55, 1] });
+  g.gable(43, 29, 5.5, 0, 18, 0, OR.ironL, 0);
+  for (let i = 0; i < 14; i++) g.box(orr(3, 7), 0.25, orr(2.5, 5), orr(-17, 17), 18 + orr(0.4, 4.6), orr(-8, 8), orcPick(orcJunkCols), 0, { rx: orr(-0.15, 0.15), rz: orr(-0.4, 0.4) });
+  g.box(15, 13, 0.7, 0, 0, 13.1, OR.oil); g.addGeo(new THREE.CylinderGeometry(7.5, 7.5, 0.7, 14, 1), { x: 0, y: 13, z: 13.1, rx: Math.PI / 2, color: OR.oil });
+  g.box(11, 11, 0.4, 0, 0, 13.45, DW_EMBER, 5); g.addGeo(new THREE.CylinderGeometry(5.5, 5.5, 0.4, 14, 1), { x: 0, y: 11, z: 13.45, rx: Math.PI / 2, color: DW_EMBER, kind: 5 });
+  for (let i = -3; i <= 3; i++) { g.cone(0.9, 3.6, 5, i * 2.0, 17.2, 13.7, OR.bone, 0, { rx: Math.PI }); g.cone(0.8, 3.0, 5, i * 2.0, 0.0, 13.9, OR.bone); }
+  fl.push([0, 6, 18, 70, 1.0, 0.42, 0.1, 1]);
+  g.sphere(4.2, 0, 24.5, 9, OR.bone, 0, { sy: 1.05, sx: 1.2 }); g.sphere(1.0, -1.9, 25.3, 12.8, DW_EMBER, 5); g.sphere(1.0, 1.9, 25.3, 12.8, DW_EMBER, 5);
+  fl.push([-1.9, 25.3, 14, 12, 1.0, 0.3, 0.1, 1], [1.9, 25.3, 14, 12, 1.0, 0.3, 0.1, 1]);
+  for (const sx of [-1, 1]) { g.cone(2.4, 24, 7, sx * 11.5, 18, 12.5, OR.bone, 0, { rz: -sx * 0.45, rx: 0.2 }); g.cone(1.8, 18, 7, sx * 18.5, 12, 14.5, OR.bone, 0, { rz: -sx * 0.5, rx: 0.25 }); }
+  const stacks = [[-15, -8, 42], [-6, -12, 50], [6, -12, 46], [15, -8, 40]];
+  for (const [sx, sz, sh] of stacks) {
+    for (let i = 0; i < Math.floor(sh / 4); i++) g.cyl(1.7, 1.8, 4.05, 10, sx, 18 + i * 4, sz, i % 2 ? OR.rust2 : OR.ironL, 0, { grad: [0.7, 1] });
+    g.cyl(1.4, 1.4, 0.4, 10, sx, 18 + Math.floor(sh / 4) * 4, sz, DW_EMBER, 5);
+    ch.push([sx, 18 + Math.floor(sh / 4) * 4 + 1, sz, 6]); fl.push([sx, 18 + Math.floor(sh / 4) * 4 + 0.5, sz, 20, 1.0, 0.45, 0.12, 1]);
+  }
+  for (const sx of [-1, 1]) { g.box(9, 26, 9, sx * 27, -1, 8, OR.rust, 6, { grad: [0.55, 1] }); g.gable(10.4, 10.4, 3, sx * 27, 25, 8, OR.ironL, 0); for (let k = 0; k < 4; k++) { const a = k * Math.PI / 2 + 0.78; g.cone(0.4, 3.2, 5, sx * 27 + Math.cos(a) * 4.6, 25.5, 8 + Math.sin(a) * 4.6, OR.bone); } g.cone(0.4, 5, 5, sx * 27, 28, 8, OR.bone); g.box(0.12, 4, 2.2, sx * 27, 31, 8.5, OR.red); }
+  g.gear(6.5, 18, 1.0, -22, 22, 13.2, OR.ironL); g.gear(5, 14, 1.0, 22, 24, 13.2, OR.rust2);
+  const grp = new THREE.Group(), gy = terrainHeight(OC.x, OC.z), ry = -3 * Math.PI / 4;
+  grp.position.set(OC.x, gy, OC.z); grp.rotation.y = ry; grp.add(new THREE.Mesh(g.build(), structMat));
+  grp.matrixAutoUpdate = false; grp.updateMatrix(); grp.updateMatrixWorld(true); scene.add(grp);
+  const c = Math.cos(ry), sn = Math.sin(ry), toW = (lx, ly, lz) => [OC.x + c * lx + sn * lz, gy + ly, OC.z - sn * lx + c * lz];
+  for (const [cx, cy, cz, size] of ch) { const p = toW(cx, cy, cz); sootSmoke.add(p[0], p[1], p[2], size * 1.9, 170, 13, 0.032); }
+  for (const [fx, fy, fz, size, r, g2, b, mode] of fl) { const p = toW(fx, fy, fz); glowSys.add(p[0], p[1], p[2], size, r, g2, b, mode); }
+  orcPlaced.push({ x: OC.x, z: OC.z, r: 40 });
+  return grp;
+})();
+/* palisade ring with watch towers (gap on the side facing the rest of the world) */
+{
+  const R = 248, segs = 128, gapAng = -3 * Math.PI / 4;
+  for (let i = 0; i < segs; i++) {
+    const a = i / segs * TAU, dAng = Math.abs(Math.atan2(Math.sin(a - gapAng), Math.cos(a - gapAng)));
+    if (dAng < 0.085) continue;
+    const x = OC.x + Math.cos(a) * R, z = OC.z + Math.sin(a) * R;
+    if (riverDist(x, z) < 70) continue;
+    placeOrc('pal', x, z, -a + Math.PI / 2 + orr(-0.04, 0.04), 1, 0.3, 0.1);
+    if (i % 11 === 0) placeOrc('tower', OC.x + Math.cos(a) * (R + 6), OC.z + Math.sin(a) * (R + 6), -a + orr(-0.3, 0.3), 1, 0.3, 4);
+  }
+}
+/* yard population */
+const polar = (rMin, rMax) => { const a = orr(0, TAU), r = Math.sqrt(orr(rMin * rMin, rMax * rMax)); return [OC.x + Math.cos(a) * r, OC.z + Math.sin(a) * r]; };
+for (let i = 0, t = 0; i < 9 && t < 800; t++) { const [x, z] = polar(90, 230); if (orcFree(x, z, 7, 40)) { placeOrc('crane', x, z, orr(0, TAU), 1, 0.3); i++; } }
+for (let i = 0, t = 0; i < 18 && t < 600; t++) { const [x, z] = polar(55, 225); if (orcFree(x, z, 4, 20)) { placeOrc('fire', x, z, 0, 1, 0.2); i++; } }
+for (let i = 0, t = 0; i < 10 && t < 400; t++) { const [x, z] = polar(60, 235); if (orcFree(x, z, 3, 14)) { placeOrc('tot', x, z, orr(0, TAU), 1, 0.3); i++; } }
+const fireSpots = orcPlaced.filter((p, i) => i > 0).slice(0, 0);
+for (let i = 0, t = 0; i < 80 && t < 3000; t++) { const [x, z] = polar(55, 238); if (orcFree(x, z, 7, 4)) { placeOrc(orn() < 0.5 ? 'hutA' : 'hutB', x, z, orr(0, TAU)); i++; } }
+for (let i = 0, t = 0; i < 170 && t < 6000; t++) {
+  const [x, z] = polar(45, 300); if (riverDist(x, z) < 90) continue;
+  const k = Math.floor(orn() * 5), r = ORCJ[k].rad; if (!orcFree(x, z, r, 1)) continue;
+  const s = orr(0.8, 1.35); ORJB[k].add(x, terrainHeight(x, z) - 0.4, z, orr(0, TAU), s, s * orr(0.9, 1.2), s, orcTints[Math.floor(orn() * orcTints.length)]); orcPlaced.push({ x, z, r: r * s * 0.8 }); i++;
+}
+for (let i = 0; i < 520; i++) { const [x, z] = polar(40, 240); barrelB.add(x, terrainHeight(x, z), z, orr(0, TAU), 1, orr(0.9, 1.1), 1, new THREE.Color(orcPick(['#a85c30', '#2f4a6a', '#a8281a', '#7a6a58', '#6e6e76', '#3c5a3a']))); }
+for (let i = 0; i < 70; i++) { const [x, z] = polar(40, 245); wreckB.addEuler(x, terrainHeight(x, z) + 0.1, z, orr(-0.08, 0.08), orr(0, TAU), orr(-0.12, 0.12), 1.1, 1.1, 1.1, new THREE.Color(orcPick(['#ffffff', '#d0b090', '#b08868']))); }
+for (let i = 0; i < 150; i++) { const [x, z] = polar(40, 245); tiresB.add(x, terrainHeight(x, z), z, orr(0, TAU), orr(0.9, 1.3)); }
+for (let i = 0, t = 0; i < 140 && t < 1500; t++) { const a = orr(0, TAU), r = orr(270, 760), x = OC.x + Math.cos(a) * r, z = OC.z + Math.sin(a) * r; if (x < 120 || z < 120 || x > 1480 || z > 1480 || riverDist(x, z) < 90) continue; deadB[i % 2].add(x, terrainHeight(x, z), z, orr(0, TAU), orr(0.8, 1.6)); i++; }
+for (let i = 0, t = 0; i < 320 && t < 3000; t++) { const a = orr(0, TAU), r = orr(60, 760), x = OC.x + Math.cos(a) * r, z = OC.z + Math.sin(a) * r; if (x < 120 || z < 120 || x > 1480 || z > 1480 || riverDist(x, z) < 90 || !orcFree(x, z, 2, 0)) continue; const s = orr(0.8, 2.4); rockB.add(x, terrainHeight(x, z) - 0.3, z, orr(0, TAU), s, s * orr(0.7, 1.3), s); i++; }
+/* ground painting: churned dirt, oil, ash rings, tracks */
+{
+  const ctx = splat.ctx, P = splat.toPx, s = splat.scale;
+  const g1 = ctx.createRadialGradient(P(OC.x), P(OC.z), 120 * s, P(OC.x), P(OC.z), 285 * s); g1.addColorStop(0, 'rgba(96,66,46,0.9)'); g1.addColorStop(1, 'rgba(96,66,46,0)');
+  ctx.fillStyle = g1; ctx.beginPath(); ctx.arc(P(OC.x), P(OC.z), 285 * s, 0, TAU); ctx.fill();
+  for (let i = 0; i < 110; i++) { const [x, z] = polar(20, 250), r = orr(5, 22) * s; ctx.fillStyle = orn() < 0.6 ? 'rgba(26,22,20,0.30)' : 'rgba(150,104,70,0.22)'; ctx.beginPath(); ctx.ellipse(P(x), P(z), r, r * orr(0.5, 1), orr(0, TAU), 0, TAU); ctx.fill(); }
+  for (const p of orcPlaced) { /* faint scuffed circle under each item */ }
+  ctx.strokeStyle = 'rgba(30,24,20,0.45)'; ctx.lineWidth = 3 * s; ctx.lineCap = 'round';
+  for (let i = 0; i < 16; i++) { const [x0, z0] = polar(30, 240), a = orr(0, TAU), L = orr(40, 120); ctx.beginPath(); ctx.moveTo(P(x0), P(z0)); ctx.quadraticCurveTo(P(x0 + Math.cos(a) * L * 0.5 + 12), P(z0 + Math.sin(a) * L * 0.5 - 12), P(x0 + Math.cos(a) * L), P(z0 + Math.sin(a) * L)); ctx.stroke(); }
+  ctx.fillStyle = 'rgba(34,30,28,0.55)'; for (const p of orcPlaced) if (p.r > 3 && p.r < 4.2) { ctx.beginPath(); ctx.arc(P(p.x), P(p.z), 7 * s, 0, TAU); ctx.fill(); }
+}
+
+/* ======================================================================
+   12. BORDERLANDS (stage 7) -- fields, farms, windmills, villages, roads and bridges
+   ====================================================================== */
+const brR = mulberry32(7777), br = () => brR(), brr = (a, b) => a + (b - a) * brR();
+const brPick = (arr) => arr[Math.floor(brR() * arr.length)];
+
+/* ---- bridges: geometry first (roads need the end points) ---- */
+const BRIDGES = [];
+function bridgeAtNS(zc, style, name) { const cx = riverNSx(zc), t = [riverNSdx(zc), 1], l = Math.hypot(t[0], t[1]); return { c: [cx, zc], n: [t[1] / l, -t[0] / l], style, name }; }
+function bridgeAtEW(xc, style, name) { const cz = riverEWz(xc), t = [1, riverEWdz(xc)], l = Math.hypot(t[0], t[1]); return { c: [xc, cz], n: [-t[1] / l, t[0] / l], style, name }; }
+BRIDGES.push(bridgeAtNS(560, 'arch', 'human-orc'), bridgeAtNS(-560, 'susp', 'elf-dwarf'), bridgeAtEW(-560, 'arch', 'human-elf'), bridgeAtEW(560, 'truss', 'orc-dwarf'), bridgeAtNS(-170, 'truss', 'centre-N'), bridgeAtEW(170, 'susp', 'centre-E'));
+const BR_HALF = 108, BR_DECK = 10.5, BR_W = 10;
+for (const b of BRIDGES) { b.p0 = [b.c[0] - b.n[0] * BR_HALF, b.c[1] - b.n[1] * BR_HALF]; b.p1 = [b.c[0] + b.n[0] * BR_HALF, b.c[1] + b.n[1] * BR_HALF]; }
+const bridgeG = new GB();
+function buildBridge(b) {
+  const g = bridgeG, n = b.n, s = [-n[1], n[0]];
+  const y0 = terrainHeight(b.p0[0], b.p0[1]), y1 = terrainHeight(b.p1[0], b.p1[1]);
+  const pt = (u, y, off = 0) => [b.c[0] + n[0] * u + s[0] * off, y, b.c[1] + n[1] * u + s[1] * off];
+  const deckY = (u) => { const f = smoothstep(BR_HALF - 38, BR_HALF, Math.abs(u)), ye = (u < 0 ? y0 : y1) + 0.6; return lerp(BR_DECK, Math.min(ye, BR_DECK + 12), f); };
+  const st = { arch: { deck: '#8e887c', rail: '#a89f8c', trim: K.brass, lamp: '#ffd08a' }, susp: { deck: '#cdb98a', rail: EL.gold, trim: EL.gold, lamp: EL.glassG }, truss: { deck: '#6a5a4a', rail: '#3c3d44', trim: '#b8693a', lamp: '#ffb060' } }[b.style];
+  const THK = 2.6;
+  for (let u = -BR_HALF; u < BR_HALF; u += 4) {
+    const ya = deckY(u) - THK / 2, yb = deckY(u + 4) - THK / 2;
+    plank(g, pt(u, ya), pt(u + 4, yb), BR_W, THK, st.deck);
+    for (const sg of [-1, 1]) {
+      beamBetween(g, pt(u, ya + THK / 2 + 0.55, sg * (BR_W / 2 - 0.2)), pt(u + 4, yb + THK / 2 + 0.55, sg * (BR_W / 2 - 0.2)), 0.5, st.rail);
+      beamBetween(g, pt(u, ya + THK / 2 + 1.25, sg * (BR_W / 2 - 0.2)), pt(u + 4, yb + THK / 2 + 1.25, sg * (BR_W / 2 - 0.2)), 0.2, st.trim);
+      if (Math.round(u) % 12 === 0) g.addGeo(GEO.box, { x: pt(u, 0, sg * (BR_W / 2 - 0.2))[0], y: deckY(u) + 0.7, z: pt(u, 0, sg * (BR_W / 2 - 0.2))[2], sx: 0.5, sy: 1.5, sz: 0.5, color: st.rail });
+    }
+    if (Math.round(u) % 16 === 0) for (const sg of [-1, 1]) {
+      const p = pt(u, deckY(u), sg * (BR_W / 2 + 0.1)), ry = Math.atan2(s[0] * -sg, s[1] * -sg) + Math.PI / 2 * 0;
+      lampBatch.add(p[0], p[1], p[2], Math.atan2(-sg * s[1], sg * s[0]) * -1 + Math.PI * 0, 1);
+      glowSys.add(p[0], p[1] + 5.4, p[2], 7, 1.0, 0.7, 0.34, 0);
+    }
+  }
+  // piers in the river
+  const pierY = (u) => deckY(u) - THK;
+  for (const u of b.style === 'arch' ? [-38, 0, 38] : [-40, 40]) { const p = pt(u, 0); g.addGeo(GEO.box, { x: p[0], y: (pierY(u) - 14) / 2 + 0, z: p[2], ry: Math.atan2(n[0], n[1]), sx: 5.5, sy: pierY(u) + 14, sz: BR_W + 3, color: '#8a8478' }); g.addGeo(new THREE.ConeGeometry(3.6, 5, 4, 1), { x: p[0] - n[0] * 3.2, y: 2, z: p[2] - n[1] * 3.2, ry: Math.atan2(n[0], n[1]) + Math.PI / 4, rz: 0, sx: 0.8, sy: 1.0, sz: 1.5, color: '#7e7a6e' }); }
+  if (b.style === 'arch') {
+    for (const [ua, ub] of [[-38, 0], [0, 38], [-76, -38], [38, 76]]) {
+      const um = (ua + ub) / 2, r = (ub - ua) / 2, yb = deckY(um) - THK - 0.2;
+      let prev = null;
+      for (let k = 0; k <= 10; k++) { const a = Math.PI * k / 10, u = um - Math.cos(a) * r, y = yb - r * 0.55 + Math.sin(a) * r * 0.55, p = pt(u, y); if (prev) plank(g, prev, p, BR_W - 0.8, 1.6, '#9a9486'); prev = p; }
+    }
+  } else if (b.style === 'truss') {
+    const H = 15, L = 66;
+    for (const sg of [-1, 1]) {
+      const off = sg * (BR_W / 2 + 0.5);
+      for (let u = -L; u < L; u += 8) {
+        const h0 = H * (1 - Math.pow(u / L, 2) * 0.25), h1 = H * (1 - Math.pow((u + 8) / L, 2) * 0.25), y0b = deckY(0);
+        beamBetween(g, pt(u, y0b + 1.2, off), pt(u + 8, y0b + 1.2, off), 0.7, st.rail);
+        beamBetween(g, pt(u, y0b + h0, off), pt(u + 8, y0b + h1, off), 0.8, st.rail);
+        beamBetween(g, pt(u, y0b + 1.2, off), pt(u, y0b + h0, off), 0.5, st.rail);
+        beamBetween(g, pt(u, y0b + 1.2, off), pt(u + 8, y0b + h1, off), 0.45, st.trim);
+      }
+      beamBetween(g, pt(L, deckY(0) + 1.2, off), pt(L, deckY(0) + H * 0.75, off), 0.5, st.rail);
+    }
+    for (let u = -L; u <= L; u += 16) { const y = deckY(0) + H * (1 - Math.pow(u / L, 2) * 0.25); beamBetween(g, pt(u, y, -(BR_W / 2 + 0.5)), pt(u, y, BR_W / 2 + 0.5), 0.6, st.rail); g.box(0.6, 0.9, 0.6, pt(u, y - 1.7, 0)[0], y - 1.7, pt(u, y - 1.7, 0)[2], st.lamp, 4); glowSys.add(pt(u, y - 1.3, 0)[0], y - 1.3, pt(u, y - 1.3, 0)[2], 8, 1.0, 0.65, 0.3, 0); }
+  } else {
+    const TH = 46, TU = 40;
+    for (const u of [-TU, TU]) for (const sg of [-1, 1]) {
+      const p = pt(u, deckY(0), sg * (BR_W / 2 + 1.4));
+      g.addGeo(GEO.box, { x: p[0], y: p[1] + TH / 2 - 4, z: p[2], ry: Math.atan2(n[0], n[1]), sx: 2.0, sy: TH + 4, sz: 2.0, color: EL.white });
+      g.addGeo(new THREE.ConeGeometry(1.6, 6, 6, 1), { x: p[0], y: p[1] + TH + 3.5, z: p[2], color: EL.gold });
+    }
+    for (const u of [-TU, TU]) for (const yy of [TH * 0.45, TH * 0.95]) beamBetween(g, pt(u, deckY(0) + yy, -(BR_W / 2 + 1.4)), pt(u, deckY(0) + yy, BR_W / 2 + 1.4), 1.0, EL.white);
+    for (const sg of [-1, 1]) {
+      const off = sg * (BR_W / 2 + 1.4), top = deckY(0) + TH;
+      let prev = null;
+      for (let k = 0; k <= 18; k++) { const u = lerp(-TU, TU, k / 18), y = lerp(top, deckY(0) + 4, 4 * (k / 18) * (1 - k / 18) * 1.0) - 0 * 0; const yy2 = top - (top - deckY(0) - 4) * (4 * (k / 18) * (1 - k / 18)); const p = pt(u, yy2, off); if (prev) beamBetween(g, prev, p, 0.28, EL.gold, 0, true, 5); if (k > 0 && k < 18 && k % 1 === 0) beamBetween(g, p, pt(u, deckY(u) + 1.3, off), 0.1, EL.goldD); prev = p; }
+      for (const dir of [-1, 1]) { let pv = pt(dir * TU, top, off); for (let k = 1; k <= 10; k++) { const t = k / 10, u = lerp(dir * TU, dir * (BR_HALF - 6), t), y = lerp(top, deckY(u) + 1.5, Math.pow(t, 0.8)); const p = pt(u, y, off); beamBetween(g, pv, p, 0.22, EL.gold, 0, true, 5); pv = p; } }
+    }
+  }
+}
+for (const b of BRIDGES) buildBridge(b);
+staticMesh(bridgeG);
+
+/* ---- new archetypes for farms and villages ---- */
+function arcBarn() {
+  const g = new GB();
+  g.box(12, 6.4, 20, 0, -0.5, 0, '#a8392b', 0, { grad: [0.65, 1] });
+  g.gable(21.4, 13.4, 3.6, 0, 5.9, 0, '#4a4f58', 9, { ry: Math.PI / 2 });
+  g.box(5.2, 5.0, 0.3, 0, 0, 10.05, '#e8e2d0'); g.box(4.4, 4.2, 0.35, 0, 0.3, 10.1, '#7e2a20');
+  beamBetween(g, [-2.2, 0.3, 10.3], [2.2, 4.5, 10.3], 0.22, '#e8e2d0'); beamBetween(g, [2.2, 0.3, 10.3], [-2.2, 4.5, 10.3], 0.22, '#e8e2d0');
+  g.box(1.6, 1.4, 0.3, 0, 6.2, 10.05, '#2c2420');
+  g.box(12.3, 0.4, 0.4, 0, 5.8, 10.0, '#e8e2d0');
+  return { geo: g.build(), chim: [], w: 13, d: 21, h: 10 };
+}
+function arcSilo() { const g = new GB(); g.cyl(2.7, 2.9, 14, 12, 0, -0.5, 0, '#8d9498', 0, { grad: [0.65, 1.05] }); g.dome(2.7, 0, 13.5, 0, K.copper); for (const y of [3, 6.5, 10]) g.torus(2.85, 0.1, 0, y, 0, K.iron); g.cone(0.3, 1.2, 5, 0, 16.3, 0, K.brass); return { geo: g.build(), chim: [], w: 6, d: 6, h: 18 }; }
+function arcChurch() {
+  const g = new GB(), ch = [];
+  g.box(9, 8, 15, 0, 0, 0, K.cream, 1, { grad: [0.65, 1] }); g.gable(10.4, 16, 4.5, 0, 8, 0, K.slate, 9, { ry: Math.PI / 2 });
+  g.box(5.4, 20, 5.4, 0, 0, 9, K.brick, 1, { grad: [0.65, 1] }); g.box(6.2, 0.7, 6.2, 0, 19.5, 9, K.brass); g.frustum(5.8, 5.8, 0.6, 0.6, 13, 0, 20.2, 9, K.copper, 9);
+  g.gear(2.0, 12, 0.4, 0, 14.5, 11.8, K.brass); g.sphere(0.35, 0, 33.4, 9, K.brass);
+  return { geo: g.build(), chim: ch, w: 11, d: 22, h: 34 };
+}
+function arcMill() {
+  const g = new GB();
+  g.cyl(3.0, 4.4, 14, 10, 0, -1, 0, '#cfc6b0', 0, { grad: [0.65, 1] }); g.cyl(3.4, 3.2, 0.7, 10, 0, 12.8, 0, K.brassD);
+  g.cone(3.9, 3.4, 10, 0, 13.4, 0, K.copper, 0, { grad: [0.8, 1.1] });
+  g.box(1.8, 2.8, 0.4, 0, 0, 4.3, K.woodD); g.box(0.9, 1.2, 0.2, 2.2, 6, 3.2, '#ffd08a', 4, { ry: 0.5 });
+  g.cyl(0.35, 0.35, 3.0, 6, -1.8, 13.2, -1.4, K.iron);
+  g.box(1.0, 1.0, 3.2, 0, 11.4, 3.7, K.brassD);
+  return { geo: g.build(), chim: [[-1.8, 16.6, -1.4, 2.2]], smoky: 0.6, w: 9, d: 9, h: 18 };
+}
+const sailGeo = (() => {
+  const g = new GB();
+  g.cyl(0.7, 0.7, 1.6, 8, 0, 0, 0, K.brassD, 0, { rx: Math.PI / 2 });
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2, ux = -Math.sin(a), uy = Math.cos(a), px = Math.cos(a), py = Math.sin(a);
+    g.addGeo(GEO.box, { x: ux * 9.2, y: uy * 9.2, rz: a, sx: 0.45, sy: 18, sz: 0.4, color: K.woodD });
+    g.addGeo(GEO.box, { x: ux * 10 + px * 2.1, y: uy * 10 + py * 2.1, z: 0.2, rz: a, sx: 3.4, sy: 14, sz: 0.1, color: '#e8dcc0' });
+    for (let k = 1; k <= 3; k++) g.addGeo(GEO.box, { x: ux * (3 + k * 3.6) + px * 1.0, y: uy * (3 + k * 3.6) + py * 1.0, rz: a, sx: 4.2, sy: 0.18, sz: 0.2, color: K.wood });
+  }
+  return g.build();
+})();
+defArc('barn', arcBarn()); defArc('silo', arcSilo()); defArc('church', arcChurch()); defArc('mill', arcMill());
+const hayGeo = (() => { const g = new GB(); g.cyl(1.7, 1.9, 2.3, 8, 0, 0, 0, '#d4b550', 0, { grad: [0.7, 1] }); g.cone(1.9, 2.4, 8, 0, 2.3, 0, '#c8a444', 0, { grad: [0.75, 1.1] }); return g.build(); })();
+const baleGeo = (() => { const g = new GB(); g.addGeo(new THREE.CylinderGeometry(1.0, 1.0, 1.3, 10, 1), { y: 1.0, rx: Math.PI / 2, color: '#d8bd5c' }); return g.build(); })();
+const hayB = new Batch(hayGeo), baleB = new Batch(baleGeo);
+
+/* ---- fields on the open land between the zone cores (painted on the ground) ---- */
+const coreTest = (x, z) => Math.hypot(x - CITY.C.x, z - CITY.C.z) < 480 || Math.hypot(x - EC.x, z - EC.z) < 660 || Math.hypot(x - DW.D0.x, z - DW.D0.z) < 360 || (x > 250 && z < -250) || Math.hypot(x - OC.x, z - OC.z) < 400 || (x > 430 && z > 430);
+const fieldOK = (x, z) => !coreTest(x, z) && riverDist(x, z) > 150 && terrainHeight(x, z) < 62 && dwSlope(x, z)[0] < 0.14 && Math.abs(x) < 1330 && Math.abs(z) < 1330;
+const CROPS = [['#7d9a3c', '#6a8a30'], ['#c8a84a', '#b8963a'], ['#7a5a3a', '#6a4a2c'], ['#8a6a9a', '#7a5a8a'], ['#5aa040', '#4a9035'], ['#d8b830', '#c8a420'], ['#8aac4a', '#789a3a']];
+const fields = [];
+for (let t = 0; t < 6000 && fields.length < 120; t++) {
+  const x = brr(-1330, 1330), z = brr(-1330, 1330); if (!fieldOK(x, z)) continue;
+  const w = brr(80, 150), d = brr(60, 100), rot = brPick([0, Math.PI / 2, 0.25, -0.3, 1.2]) + brr(-0.1, 0.1);
+  if (fields.some((f) => Math.hypot(f.x - x, f.z - z) < (f.r + Math.hypot(w, d) / 2) * 0.82)) continue;
+  const corners = [[-w / 2, -d / 2], [w / 2, -d / 2], [w / 2, d / 2], [-w / 2, d / 2]].map(([cx, cz]) => [x + cx * Math.cos(rot) - cz * Math.sin(rot), z + cx * Math.sin(rot) + cz * Math.cos(rot)]);
+  if (!corners.every(([cx, cz]) => fieldOK(cx, cz))) continue;
+  fields.push({ x, z, w, d, rot, r: Math.hypot(w, d) / 2, crop: brPick(CROPS) });
+}
+{
+  const ctx = splat.ctx, P = splat.toPx, s = splat.scale;
+  for (const f of fields) {
+    ctx.save(); ctx.translate(P(f.x), P(f.z)); ctx.rotate(f.rot); ctx.scale(s, s);
+    ctx.fillStyle = f.crop[0]; ctx.fillRect(-f.w / 2, -f.d / 2, f.w, f.d);
+    ctx.fillStyle = f.crop[1]; for (let y = -f.d / 2 + 1.5; y < f.d / 2; y += 5) ctx.fillRect(-f.w / 2, y, f.w, 2.4);
+    ctx.strokeStyle = 'rgba(52,86,40,0.9)'; ctx.lineWidth = 3; ctx.strokeRect(-f.w / 2, -f.d / 2, f.w, f.d);
+    ctx.restore();
+  }
+}
+/* farms */
+const farmSpots = [];
+for (const f of fields) {
+  if (br() > 0.3 || farmSpots.length > 26) continue;
+  const a = br() * TAU, x = f.x + Math.cos(a) * (f.r + 22), z = f.z + Math.sin(a) * (f.r + 22);
+  if (!fieldOK(x, z) || fields.some((g2) => g2 !== f && Math.hypot(g2.x - x, g2.z - z) < g2.r * 0.7) || farmSpots.some((p) => Math.hypot(p.x - x, p.z - z) < 90)) continue;
+  farmSpots.push({ x, z });
+}
+function placeFarm(name, x, z, ry) {
+  const a = ARC[name], y = terrainHeight(x, z) - 0.4, sx = brr(0.95, 1.1);
+  cityBatch[name].add(x, y, z, ry, sx, sx, sx, name === 'barn' || name === 'silo' || name === 'mill' ? null : cityTint());
+  const c = Math.cos(ry), sn = Math.sin(ry);
+  for (const [cx, cy, cz, size] of a.chim || []) if (br() < (a.smoky ?? 0.4)) sootSmoke.add(x + (c * cx + sn * cz) * sx, y + cy * sx, z + (-sn * cx + c * cz) * sx, size * 1.5, brr(60, 100), 4, 0.055);
+  return [x, y, z];
+}
+const mills = [];
+for (const fs of farmSpots) {
+  const ry = brr(0, TAU);
+  placeFarm('barn', fs.x, fs.z, ry);
+  const o = (dx, dz) => [fs.x + dx * Math.cos(ry) + dz * Math.sin(ry), fs.z - dx * Math.sin(ry) + dz * Math.cos(ry)];
+  placeFarm(brPick(['houseA', 'houseB', 'cottage']), ...o(-22, 4), ry + 0.3);
+  if (br() < 0.7) placeFarm('silo', ...o(14, -6), 0);
+  for (let i = 0; i < 4; i++) { const [hx, hz] = o(brr(-16, 16), brr(-26, -34)); hayB.add(hx, terrainHeight(hx, hz), hz, br() * TAU, brr(0.8, 1.2)); }
+  for (let i = 0; i < 5; i++) { const [hx, hz] = o(brr(-10, 14), brr(18, 30)); baleB.add(hx, terrainHeight(hx, hz), hz, br() * TAU, 1, 1, 1); }
+  for (let i = 0; i < 8; i++) { const [tx, tz] = o(brr(-36, 36), brr(-40, 40)); if (fieldOK(tx, tz)) addCommonTree(tx, tz); }
+}
+/* villages */
+const villages = [];
+for (let t = 0; t < 3000 && villages.length < 6; t++) {
+  const x = brr(-1250, 1250), z = brr(-1250, 1250);
+  if (!fieldOK(x, z) || !fieldOK(x + 40, z) || !fieldOK(x - 40, z) || !fieldOK(x, z + 40) || !fieldOK(x, z - 40) || riverDist(x, z) < 180) continue;
+  if (villages.some((v) => Math.hypot(v.x - x, v.z - z) < 380) || farmSpots.some((p) => Math.hypot(p.x - x, p.z - z) < 70) || fields.some((f) => Math.hypot(f.x - x, f.z - z) < f.r * 0.8)) continue;
+  villages.push({ x, z });
+}
+for (const v of villages) {
+  placeFarm('church', v.x, v.z, brr(0, TAU));
+  const n = 13;
+  for (let i = 0; i < n; i++) {
+    const a = i / n * TAU + brr(-0.15, 0.15), r = brr(36, 56), x = v.x + Math.cos(a) * r, z = v.z + Math.sin(a) * r;
+    if (!fieldOK(x, z)) continue;
+    placeFarm(brPick(['houseA', 'houseA', 'houseB', 'cottage', 'cottage', 'town']), x, z, Math.atan2(v.x - x, v.z - z) + brr(-0.2, 0.2));
+    if (i % 2 === 0) { const [lx, lz] = [v.x + Math.cos(a + 0.12) * (r - 10), v.z + Math.sin(a + 0.12) * (r - 10)], gy = terrainHeight(lx, lz); lampBatch.add(lx, gy, lz, a, 1); glowSys.add(lx + 0.9 * Math.cos(a), gy + 5.4, lz - 0.9 * Math.sin(a), 7, 1.0, 0.7, 0.34, 0); }
+  }
+  for (let i = 0; i < 12; i++) { const a = br() * TAU, r = brr(66, 100), x = v.x + Math.cos(a) * r, z = v.z + Math.sin(a) * r; if (fieldOK(x, z)) addCommonTree(x, z); }
+  const sp = splat.ctx; sp.fillStyle = 'rgba(140,128,104,0.9)'; sp.beginPath(); sp.arc(splat.toPx(v.x), splat.toPx(v.z), 30 * splat.scale, 0, TAU); sp.fill();
+  sp.strokeStyle = 'rgba(120,108,86,0.8)'; sp.lineWidth = 3 * splat.scale; sp.beginPath(); sp.arc(splat.toPx(v.x), splat.toPx(v.z), 47 * splat.scale, 0, TAU); sp.stroke();
+}
+/* steampunk windmills with rotating sails */
+for (let t = 0, placed = 0; t < 4000 && placed < 12; t++) {
+  const x = brr(-1300, 1300), z = brr(-1300, 1300);
+  if (!fieldOK(x, z) || mills.some((m) => Math.hypot(m.x - x, m.z - z) < 260)) continue;
+  const ry = Math.atan2(-G.uWind.value.x, -G.uWind.value.z) + brr(-0.4, 0.4), p = placeFarm('mill', x, z, ry);
+  const c = Math.cos(ry), sn = Math.sin(ry), sc = 1.0;
+  mills.push({ x, z, ry, hub: new THREE.Vector3(p[0] + sn * 3.9, p[1] + 11.4, p[2] + c * 3.9), spin: br() * TAU, speed: brr(0.35, 0.7) });
+  placed++;
+}
+const sailMesh = new THREE.InstancedMesh(sailGeo, structMat, Math.max(1, mills.length));
+sailMesh.frustumCulled = false; scene.add(sailMesh);
+const _sd = new THREE.Object3D(), _sq = new THREE.Quaternion(), _sz = new THREE.Vector3(0, 0, 1);
+updaters.push((dt) => {
+  for (let i = 0; i < mills.length; i++) {
+    const m = mills[i]; m.spin += dt * m.speed;
+    _sd.position.copy(m.hub); _sd.quaternion.setFromEuler(_ge.set(0, m.ry, 0)); _sd.quaternion.multiply(_sq.setFromAxisAngle(_sz, m.spin)); _sd.updateMatrix();
+    sailMesh.setMatrixAt(i, _sd.matrix);
+  }
+  sailMesh.instanceMatrix.needsUpdate = true;
+});
+/* trees: groves and hillside woods in the borderlands */
+for (let t = 0, n = 0; t < 9000 && n < 700; t++) {
+  const x = brr(-1330, 1330), z = brr(-1330, 1330);
+  if (coreTest(x, z) || riverDist(x, z) < 110) continue;
+  const h = terrainHeight(x, z); if (h < 6 || h > 150 || dwSlope(x, z)[0] > 0.5) continue;
+  if (fields.some((f) => Math.hypot(f.x - x, f.z - z) < f.r * 0.9)) continue;
+  const grove = noise2(x * 0.006 + 40, z * 0.006 - 3) > 0.05; if (!grove && br() > 0.08) continue;
+  addCommonTree(x, z, h > 60 ? 'pine' : null); n++;
+}
+/* roads: gates -> bridges -> gates, painted on the ground, with avenue trees */
+const roadSegs = [];
+function paintRoad(pts, width = 8) {
+  const ctx = splat.ctx, P = splat.toPx, s = splat.scale;
+  const path = () => { ctx.beginPath(); ctx.moveTo(P(pts[0][0]), P(pts[0][1])); for (let i = 1; i < pts.length - 1; i++) { const mx = (pts[i][0] + pts[i + 1][0]) / 2, mz = (pts[i][1] + pts[i + 1][1]) / 2; ctx.quadraticCurveTo(P(pts[i][0]), P(pts[i][1]), P(mx), P(mz)); } const l = pts[pts.length - 1]; ctx.lineTo(P(l[0]), P(l[1])); };
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(92,72,52,0.9)'; ctx.lineWidth = (width + 3) * s; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(168,146,108,0.95)'; ctx.lineWidth = width * s; path(); ctx.stroke();
+  ctx.strokeStyle = 'rgba(190,168,128,0.6)'; ctx.lineWidth = width * 0.35 * s; path(); ctx.stroke();
+  roadSegs.push(pts);
+}
+const bE = (b) => [b.p0, b.p1];
+const B = Object.fromEntries(BRIDGES.map((b) => [b.name, b]));
+{
+  const hc = CITY.C, ox = OC.x;
+  const south = (b) => (b.p0[1] > b.p1[1] ? [b.p0, b.p1] : [b.p1, b.p0]), west = (b) => (b.p0[0] < b.p1[0] ? [b.p0, b.p1] : [b.p1, b.p0]);
+  const [a1, b1] = west(B['human-orc']);                     // human (west) -> orc (east)
+  paintRoad([[hc.x + 330, hc.z - 120], [-330, 700], [-170, 620], a1, b1, [300, 640], [470, 660], [OC.x - 175, OC.z - 175]]);
+  const [a3, b3] = south(B['human-elf']);                    // human (south) -> elf (north)
+  paintRoad([[hc.x + 40, hc.z - 380], [-700, 250], [-640, 170], a3, b3, [-600, -170], [-650, -420], [EC.x + 60, EC.z + 120]]);
+  const [a2, b2] = west(B['elf-dwarf']);                     // elf (west) -> dwarf (east)
+  paintRoad([[EC.x + 130, EC.z + 120], [-560, -720], [-380, -600], a2, b2, [330, -560], [470, -600], [DW.D0.x - 240, DW.D0.z + 70]]);
+  const [a4, b4] = south(B['orc-dwarf']);                    // orc (south) -> dwarf (north)
+  paintRoad([[OC.x - 170, OC.z - 190], [610, 520], [590, 300], a4, b4, [600, -150], [640, -400], [DW.D0.x - 10, DW.D0.z + 250]]);
+  const [a5, b5] = west(B['centre-N']); paintRoad([[-330, -140], a5, b5, [330, -190]], 7);
+  const [a6, b6] = south(B['centre-E']); paintRoad([[230, 300], a6, b6, [210, -280]], 7);
+  paintRoad([[-330, -140], [-120, 0], [-120, 140], [0, 260]], 6);
+  // avenue trees along the main roads
+  for (const pts of roadSegs.slice(0, 4)) for (let i = 0; i < pts.length - 1; i++) { const [x0, z0] = pts[i], [x1, z1] = pts[i + 1], L = Math.hypot(x1 - x0, z1 - z0); for (let d = 12; d < L - 12; d += 20) { const t2 = d / L, x = lerp(x0, x1, t2), z = lerp(z0, z1, t2), nx = -(z1 - z0) / L, nz = (x1 - x0) / L; for (const sg of [-1, 1]) { const px = x + nx * 9 * sg, pz = z + nz * 9 * sg; if (riverDist(px, pz) > 85 && !coreTest(px, pz) && br() < 0.8) addCommonTree(px, pz, 'poplar', brr(0.8, 1.1)); } } }
+}
+
+/* ======================================================================
+   13. CLOUDS (stage 8) -- three altitude layers; flying inside one drops visibility
+   ====================================================================== */
+const clR = mulberry32(2468), cl = () => clR(), clr = (a, b) => a + (b - a) * clR();
+const CLOUD_WRAP = 2100, CLOUD_SPEED = 1.3;
+const cloudClusters = [];
+{
+  const P = [], O = [], I = [];
+  const layers = [
+    { n: 62, y: [205, 315], R: [70, 135], flat: 0.42, puffs: 13, alpha: 0.78, dens: 0.8 },
+    { n: 48, y: [440, 570], R: [100, 200], flat: 0.36, puffs: 13, alpha: 0.8, dens: 0.95 },
+    { n: 26, y: [830, 910], R: [190, 330], flat: 0.13, puffs: 15, alpha: 0.5, dens: 0.5 },
+  ];
+  for (const L of layers) for (let i = 0; i < L.n; i++) {
+    const cx = clr(-CLOUD_WRAP, CLOUD_WRAP), cz = clr(-CLOUD_WRAP, CLOUD_WRAP), cy = clr(L.y[0], L.y[1]), R = clr(L.R[0], L.R[1]), seed = cl();
+    for (let k = 0; k < L.puffs; k++) {
+      const a = clr(0, TAU), r = Math.sqrt(cl()) * R, ox = Math.cos(a) * r * (L.flat < 0.2 ? 1.6 : 1), oz = Math.sin(a) * r, oy = (cl() - 0.3) * R * L.flat * (1.2 - 0.6 * r / R);
+      const rad = R * clr(0.34, 0.62), shade = clamp(0.3 + (oy / (R * L.flat)) * 0.45 + 0.4 * (1 - r / R) + clr(-0.1, 0.1), 0, 1);
+      P.push(cx, cy, cz, seed); O.push(ox, oy, oz, rad); I.push(shade, L.alpha);
+    }
+    cloudClusters.push({ x: cx, y: cy, z: cz, R: R * 1.15, flat: L.flat, dens: L.dens });
+  }
+  const n = P.length / 4, q = new THREE.PlaneGeometry(1, 1), geo = new THREE.InstancedBufferGeometry();
+  geo.index = q.index; geo.setAttribute('position', q.attributes.position);
+  geo.setAttribute('aPos', new THREE.InstancedBufferAttribute(new Float32Array(P), 4));
+  geo.setAttribute('aOff', new THREE.InstancedBufferAttribute(new Float32Array(O), 4));
+  geo.setAttribute('aInfo', new THREE.InstancedBufferAttribute(new Float32Array(I), 2));
+  geo.instanceCount = n;
+  const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {}]);
+  for (const k in G) uniforms[k] = G[k];
+  const mat = new THREE.ShaderMaterial({
+    uniforms, fog: true, transparent: true, depthWrite: false,
+    vertexShader: `
+      attribute vec4 aPos; attribute vec4 aOff; attribute vec2 aInfo;
+      uniform float uTime; uniform vec3 uWind;
+      varying vec2 vUv; varying float vShade; varying float vAlpha; varying float vSeed;
+      #include <fog_pars_vertex>
+      void main(){
+        vec2 c = aPos.xz + uWind.xz * ${CLOUD_SPEED.toFixed(2)} * uTime;
+        c = mod(c + ${CLOUD_WRAP.toFixed(1)}, ${(CLOUD_WRAP * 2).toFixed(1)}) - ${CLOUD_WRAP.toFixed(1)};
+        vec3 wp = vec3(c.x + aOff.x, aPos.y + aOff.y, c.y + aOff.z);
+        vec4 mvPosition = viewMatrix * vec4(wp, 1.0);
+        float R = aOff.w;
+        float fade = smoothstep(R * 0.22, R * 1.05, length(mvPosition.xyz));
+        mvPosition.xy += position.xy * R * 2.0;
+        gl_Position = projectionMatrix * mvPosition;
+        vUv = position.xy * 2.0; vShade = aInfo.x; vAlpha = aInfo.y * fade; vSeed = aPos.w;
+        #include <fog_vertex>
+      }`,
+    fragmentShader: `
+      uniform vec3 uHorizon; uniform vec3 uSunCol; uniform float uDayLight; uniform float uNight;
+      varying vec2 vUv; varying float vShade; varying float vAlpha; varying float vSeed;
+      #include <fog_pars_fragment>
+      ${GLSL_NOISE}
+      void main(){
+        float d2 = dot(vUv, vUv);
+        if (d2 > 1.0) discard;
+        float n = fbm2(vUv * 1.7 + vSeed * 31.0);
+        float a = (1.0 - d2) * (0.5 + 0.95 * n);
+        a = smoothstep(0.04, 0.7, a) * vAlpha;
+        if (a < 0.01) discard;
+        float sunI = smoothstep(-0.12, 0.25, uFogSunDir.y);
+        vec3 amb = mix(uHorizon, vec3(0.92), 0.55) * 0.85;
+        vec3 lit = amb * 0.55 + uSunCol * (0.55 * sunI + 0.22);
+        vec3 shadow = amb * 0.5 * (0.6 + 0.4 * sunI);
+        vec3 col = mix(shadow, lit, clamp(vShade + (n - 0.5) * 0.3, 0.0, 1.0));
+        col *= 0.10 + 0.90 * smoothstep(-0.22, 0.08, uFogSunDir.y);       // high clouds stay sunlit a bit longer than the ground
+        col += vec3(0.05, 0.07, 0.13) * uNight * (0.3 + 0.7 * vShade);
+        gl_FragColor = vec4(col, a);
+        #include <fog_fragment>
+      }`,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false; mesh.renderOrder = 4;
+  scene.add(mesh);
+}
+/* camera inside a cloud -> thick, cloud-coloured fog + misty sky */
+const cloudState = { inside: 0 };
+const _cc = new THREE.Color();
+const wrapCloud = (v) => ((v + CLOUD_WRAP) % (CLOUD_WRAP * 2) + CLOUD_WRAP * 2) % (CLOUD_WRAP * 2) - CLOUD_WRAP;
+updaters.push((dt, t) => {
+  const cam = camera.position;
+  let dens = 0;
+  for (let i = 0; i < cloudClusters.length; i++) {
+    const c = cloudClusters[i];
+    if (Math.abs(cam.y - c.y) > c.R * (c.flat * 1.1 + 0.15)) continue;
+    const dx = cam.x - wrapCloud(c.x + G.uWind.value.x * CLOUD_SPEED * t), dz = cam.z - wrapCloud(c.z + G.uWind.value.z * CLOUD_SPEED * t);
+    const d = Math.hypot(dx, dz, (cam.y - c.y) * 1.6);
+    dens += c.dens * (1 - smoothstep(c.R * 0.3, c.R * 0.95, d));
+  }
+  cloudState.inside += (clamp(dens, 0, 1) - cloudState.inside) * (1 - Math.exp(-3.0 * dt));
+  const k = cloudState.inside, light = 0.10 + 0.90 * smoothstep(-0.22, 0.08, G.uSunDir.value.y);
+  const h = G.uHorizon.value;
+  G.uCloudCol.value.set((0.55 * h.x + 0.45 * 0.88) * light, (0.55 * h.y + 0.45 * 0.89) * light, (0.55 * h.z + 0.45 * 0.92) * light);
+  G.uCloudIn.value = k;
+  scene.fog.density = sunState.fogDensity + k * 0.0125;
+  scene.fog.color.copy(sunState.fogCol).lerp(_cc.setRGB(G.uCloudCol.value.x, G.uCloudCol.value.y, G.uCloudCol.value.z, THREE.SRGBColorSpace), k);
+});
+
+/* ======================================================================
+   14. AIRSHIPS (stage 8) -- four racial designs, patrol routes, moored ships
+   ====================================================================== */
+function spindleGeo(L, R, n = 12, seg = 18, pw = 0.7) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) { const t = i / n; pts.push(new THREE.Vector2(Math.max(R * Math.pow(Math.sin(Math.PI * t), pw), 0.001), (t - 0.5) * L)); }
+  return new THREE.LatheGeometry(pts, seg);
+}
+const hullR = (L, R, z, pw = 0.7) => R * Math.pow(Math.max(Math.sin(Math.PI * (z / L + 0.5)), 0), pw);
+function shipHuman() {
+  const L = 64, R = 11, g = new GB(), props = [], stacks = [];
+  g.addGeo(spindleGeo(L, R), { rx: Math.PI / 2, color: '#ece1c6', grad: [0.6, 1.1] });
+  for (const z of [-24, -14, -4, 6, 16, 26]) g.addGeo(new THREE.TorusGeometry(hullR(L, R, z) + 0.12, 0.24, 4, 20), { z, color: K.brass });
+  g.sphere(1.6, 0, 0, L / 2 - 0.4, K.brass);
+  g.box(10, 4.2, 24, 0, -R - 5.6, 2, '#6a4a30', 0, { grad: [0.7, 1] });
+  g.box(10.8, 0.5, 24.8, 0, -R - 5.7, 2, K.brass); g.box(10.8, 0.5, 24.8, 0, -R - 1.7, 2, K.brass);
+  g.box(7, 2.2, 0.3, 0, -R - 4.7, 14.1, '#ffd08a', 4);
+  for (let k = 0; k < 8; k++) for (const sg of [-1, 1]) g.box(0.25, 1.2, 1.6, sg * 5.05, -R - 4.8, -8 + k * 3.2, '#ffd08a', 4);
+  for (const sx of [-3.6, 3.6]) for (const z of [-6, 8]) beamBetween(g, [sx, -R * 0.82, z], [sx * 1.15, -R - 3.6, z], 0.3, K.iron);
+  for (const z of [-6, 4]) { g.cyl(0.9, 1.1, 5, 8, 0, R - 0.8, z, K.brass); g.cyl(1.2, 1.2, 0.5, 8, 0, R + 4.2, z, K.soot); stacks.push([0, R + 5.2, z]); }
+  g.box(0.6, 2 * (R * 0.8 + 3), 9, 0, -(R * 0.8 + 3), -L / 2 + 5, '#a8372b'); g.box(2 * (R * 0.8 + 3), 0.6, 9, 0, -0.3, -L / 2 + 5, '#a8372b');
+  for (const sg of [-1, 1]) { g.addGeo(new THREE.CylinderGeometry(1.2, 1.2, 5, 8, 1), { x: sg * (R + 2.8), y: -R * 0.45, z: -6, rx: Math.PI / 2, color: K.brassD }); beamBetween(g, [sg * R * 0.72, -R * 0.2, -6], [sg * (R + 2.2), -R * 0.45, -6], 0.35, K.iron); props.push([sg * (R + 2.8), -R * 0.45, -8.8, 4.0]); }
+  g.sphere(0.5, R + 0.1, 0, -L / 2 + 9, '#ff2a1a', 4); g.sphere(0.5, -(R + 0.1), 0, -L / 2 + 9, '#2aff5a', 4); g.sphere(0.5, 0, R + 0.1, -L / 2 + 6, '#ffffff', 4);
+  return { geo: g.build(), props, stacks, L, R, smoke: 3.2 };
+}
+function shipDwarf() {
+  const L = 72, R = 12.5, g = new GB(), props = [], stacks = [];
+  g.addGeo(spindleGeo(L, R, 12, 18, 0.62), { rx: Math.PI / 2, color: '#585962', grad: [0.6, 1.1] });
+  for (const z of [-26, -14, -2, 10, 22]) g.addGeo(new THREE.TorusGeometry(hullR(L, R, z, 0.62) + 0.14, 0.4, 4, 20), { z, color: K.brassD });
+  for (let k = 0; k < 6; k++) for (const sg of [-1, 1]) { const z = -22 + k * 8; g.box(0.5, 1.4, 2.6, sg * (hullR(L, R, z, 0.62) + 0.05), -1.4, z, DW_EMBER, 5); }
+  g.addGeo(new THREE.ConeGeometry(2.2, 8, 8, 1), { z: L / 2 + 3.5, rx: Math.PI / 2, color: K.ironL });
+  g.box(12, 5, 28, 0, -R - 6.4, 2, '#605c54', 0, { grad: [0.7, 1] }); g.box(12.8, 0.6, 28.8, 0, -R - 6.6, 2, K.brassD);
+  for (const sg of [-1, 1]) for (let k = 0; k < 3; k++) g.addGeo(new THREE.CylinderGeometry(0.55, 0.75, 6, 8, 1), { x: sg * 8.2, y: -R - 5.2, z: -6 + k * 7.5, rz: sg * Math.PI / 2, color: K.iron });
+  for (const sx of [-3.6, 3.6]) for (const z of [-8, 10]) beamBetween(g, [sx, -R * 0.84, z], [sx * 1.2, -R - 3.9, z], 0.38, K.iron);
+  g.box(0.3, 1.4, 5, 5.95, -R - 4.6, 4, '#ffb060', 4); g.box(0.3, 1.4, 5, -5.95, -R - 4.6, 4, '#ffb060', 4); g.box(6, 1.8, 0.3, 0, -R - 5.2, 16.1, '#ffb060', 4);
+  for (const z of [-14, -3, 8]) { g.cyl(1.2, 1.6, 8, 8, 0, R - 0.8, z, K.iron, 0, { grad: [0.6, 1] }); g.cyl(1.0, 1.0, 0.4, 8, 0, R + 7.2, z, DW_EMBER, 5); stacks.push([0, R + 8.2, z]); }
+  g.box(0.7, 2 * (R * 0.8 + 3.5), 10, 0, -(R * 0.8 + 3.5), -L / 2 + 5.5, K.iron); g.box(2 * (R * 0.8 + 3.5), 0.7, 10, 0, -0.35, -L / 2 + 5.5, K.iron);
+  for (const sg of [-1, 1]) for (const [py, pz] of [[-R * 0.35, -9], [-R * 0.95, 4]]) { g.addGeo(new THREE.CylinderGeometry(1.4, 1.4, 5, 8, 1), { x: sg * (R + 3.2), y: py, z: pz, rx: Math.PI / 2, color: K.brassD }); beamBetween(g, [sg * R * 0.7, py * 0.6, pz], [sg * (R + 2.8), py, pz], 0.4, K.iron); props.push([sg * (R + 3.2), py, pz - 3.1, 4.6]); }
+  g.sphere(0.55, R + 0.1, 0, -L / 2 + 10, '#ff2a1a', 4); g.sphere(0.55, -(R + 0.1), 0, -L / 2 + 10, '#2aff5a', 4);
+  return { geo: g.build(), props, stacks, L, R, smoke: 4.4 };
+}
+function shipElf() {
+  const L = 58, R = 9, g = new GB(), props = [], stacks = [];
+  g.addGeo(spindleGeo(L, R, 12, 18, 0.9), { rx: Math.PI / 2, color: '#f3eddd', grad: [0.64, 1.1] });
+  for (const z of [-18, -9, 0, 9, 18]) g.addGeo(new THREE.TorusGeometry(hullR(L, R, z, 0.9) + 0.1, 0.16, 4, 20), { z, color: EL.gold });
+  g.addGeo(new THREE.SphereGeometry(1, 10, 6), { y: -R - 5.4, z: 2, sx: 4.4, sy: 2.7, sz: 16, color: '#b89a68', grad: [0.65, 1.1] });
+  g.box(7.4, 0.3, 24, 0, -R - 3.2, 2, EL.wood); for (const sg of [-1, 1]) g.box(0.2, 1.0, 24, sg * 3.6, -R - 2.9, 2, EL.gold);
+  g.cone(0.9, 5, 6, 0, -R - 5.0, 19, EL.gold, 0, { rx: Math.PI / 2 });
+  for (const z of [-4, 8]) { g.box(0.25, 12, 0.25, 0, -R - 3.2, z, EL.goldD); g.box(0.12, 9, 7, 0, -R - 1.6, z + 0.2, '#cfe8c0'); }
+  for (const sx of [-2.6, 2.6]) for (const z of [-3, 10]) beamBetween(g, [sx * 0.8, -R * 0.82, z], [sx, -R - 3.3, z], 0.22, EL.goldD);
+  g.ico(0.9, 0, -R - 3.0, 14.5, '#7ff5d0', 8, { sy: 1.8 }, 0); g.ico(0.9, 0, -R - 3.0, -9.5, '#7ff5d0', 8, { sy: 1.8 }, 0);
+  for (const sg of [-1, 1]) for (let k = 0; k < 5; k++) g.box(0.5, 0.6, 0.5, sg * 3.7, -R - 2.2, -8 + k * 5.2, EL.glassG, 4);
+  g.box(0.5, 2 * (R * 0.8 + 3), 7, 0, -(R * 0.8 + 3), -L / 2 + 4, EL.white); g.box(2 * (R * 0.8 + 3), 0.5, 7, 0, -0.25, -L / 2 + 4, EL.white);
+  for (const sg of [-1, 1]) { g.addGeo(new THREE.CylinderGeometry(0.8, 0.8, 4, 8, 1), { x: sg * (R + 2.2), y: -R * 0.4, z: -7, rx: Math.PI / 2, color: EL.gold }); beamBetween(g, [sg * R * 0.74, -R * 0.2, -7], [sg * (R + 1.8), -R * 0.4, -7], 0.28, EL.goldD); props.push([sg * (R + 2.2), -R * 0.4, -9.3, 3.4]); }
+  g.sphere(0.4, R + 0.1, 0, -L / 2 + 8, '#ff2a1a', 4); g.sphere(0.4, -(R + 0.1), 0, -L / 2 + 8, '#2aff5a', 4);
+  return { geo: g.build(), props, stacks, L, R, smoke: 0 };
+}
+function shipOrc() {
+  const L = 60, R = 10, g = new GB(), props = [], stacks = [];
+  const lumps = [[-22, 7.2, '#7a3a24'], [-11, 9.4, '#6e6e76'], [0, 10.2, '#8a4a28'], [11, 9.6, '#4c4c52'], [22, 7.0, '#9a7040']];
+  for (const [z, r, col] of lumps) g.ico(r, 0, 0, z, col, 0, { sz: 1.5, grad: [0.55, 1.1] }, 1);
+  for (const [z, r] of lumps) g.addGeo(new THREE.TorusGeometry(r * 0.96, 0.35, 4, 14), { z: z + 5.5, color: '#3a2a20' });
+  for (let i = 0; i < 6; i++) g.cone(0.5, 3, 5, Math.cos(i * 1.05) * 2.5, R - 0.5, -18 + i * 7, OR.bone);
+  g.box(9, 5, 24, 0, -R - 6.2, 0, '#6a3a24', 6, { grad: [0.65, 1] }); g.gable(10.4, 25.6, 1.6, 0, -R - 1.4, 0, OR.ironL, 0, { ry: Math.PI / 2 });
+  for (const sx of [-3.4, 3.4]) for (const z of [-7, 7]) beamBetween(g, [sx * 0.9, -R * 0.78, z], [sx, -R - 1.6, z], 0.3, OR.rustD);
+  g.sphere(1.5, 0, -R - 4.6, 13.2, OR.bone, 0, { sy: 1.1 }); g.cone(0.5, 3, 5, -1.5, -R - 3.4, 13.2, OR.bone, 0, { rz: 0.9 }); g.cone(0.5, 3, 5, 1.5, -R - 3.4, 13.2, OR.bone, 0, { rz: -0.9 });
+  g.box(0.5, 0.5, 0.3, -0.5, -R - 4.4, 14.5, DW_EMBER, 5); g.box(0.5, 0.5, 0.3, 0.5, -R - 4.4, 14.5, DW_EMBER, 5);
+  for (const z of [-4, 6]) { g.cyl(0.8, 1.0, 5, 6, 0, -R - 1.6, z, OR.iron); stacks.push([0, -R + 3.8, z]); }
+  g.box(2.6, 2.6, 0.5, 0, -R - 5.6, -12.2, DW_EMBER, 5);
+  g.box(0.15, 5, 3, 4.6, -R - 2, -8, OR.red); g.box(0.15, 5, 3, -4.6, -R - 2, 8, OR.red);
+  g.box(0.5, 2 * (R * 0.8 + 3), 7, 0, -(R * 0.8 + 3), -L / 2 + 3, OR.rustD); g.box(2 * (R * 0.8 + 3), 0.5, 7, 0, -0.25, -L / 2 + 3, OR.rustD);
+  for (const sg of [-1, 1]) { g.addGeo(new THREE.CylinderGeometry(1.0, 1.0, 4, 6, 1), { x: sg * (R + 2.2), y: -R * 0.5, z: -8, rx: Math.PI / 2, color: OR.iron }); beamBetween(g, [sg * R * 0.78, -R * 0.3, -8], [sg * (R + 1.8), -R * 0.5, -8], 0.36, OR.rustD); props.push([sg * (R + 2.2), -R * 0.5, -10.2, 4.4]); }
+  g.sphere(0.5, R * 0.9, 0, -L / 2 + 10, '#ff2a1a', 4);
+  return { geo: g.build(), props, stacks, L, R, smoke: 3.4 };
+}
+const SHIPDEF = { human: shipHuman(), dwarf: shipDwarf(), elf: shipElf(), orc: shipOrc() };
+const propGeo = (() => { const g = new GB(); g.cyl(0.25, 0.25, 0.7, 6, 0, -0.3, 0, K.brassD, 0, { rx: Math.PI / 2 }); for (let i = 0; i < 3; i++) g.addGeo(GEO.box, { x: 0, y: 0, z: 0, rz: i * TAU / 3, sx: 0.28, sy: 2.0, sz: 0.06, color: K.brassD }); for (let i = 0; i < 3; i++) g.addGeo(GEO.box, { x: -Math.sin(i * TAU / 3) * 1.0, y: Math.cos(i * TAU / 3) * 1.0, rz: i * TAU / 3, sx: 0.5, sy: 1.8, sz: 0.04, color: '#cfc7b0' }); return g.build(); })();
+
+/* running lights / interior glow of each design (local coords, as glow sprites that follow the ship) */
+const SHIPLIGHTS = {
+  human: [[0, -16, 2, 17, 1, 0.72, 0.35, 0], [0, -16, -8, 12, 1, 0.72, 0.35, 0], [11.1, 0, -23, 5, 1, 0.15, 0.1, 1], [-11.1, 0, -23, 5, 0.2, 1, 0.35, 1], [0, 11.1, -26, 4, 1, 1, 1, 1]],
+  dwarf: [[0, -2, 0, 30, 1, 0.45, 0.12, 2], [0, 20.7, -14, 14, 1, 0.5, 0.14, 1], [0, 20.7, -3, 14, 1, 0.5, 0.14, 1], [0, 20.7, 8, 14, 1, 0.5, 0.14, 1], [0, -17, 4, 16, 1, 0.65, 0.3, 0]],
+  elf: [[0, -12, 14.5, 13, 0.4, 1, 0.8, 3], [0, -12, -9.5, 13, 0.4, 1, 0.8, 3], [0, -11, 2, 16, 0.5, 1, 0.78, 0]],
+  orc: [[0, -15.6, -12.5, 20, 1, 0.42, 0.1, 1], [0, -14.4, 14.6, 10, 1, 0.3, 0.1, 1], [0, -14, 0, 14, 1, 0.5, 0.15, 2]],
+};
+const fleet = [], windDir = new THREE.Vector3(G.uWind.value.x, 0, G.uWind.value.z).normalize();
+const shipSmoke = makeSmokeSystem({ colA: [0.16, 0.16, 0.17], colB: [0.6, 0.6, 0.62], alpha: 0.55 });
+const shipGlow = makeGlowSystem();
+function addShip(type, spec) {
+  const d = SHIPDEF[type], s = { type, d, spec, phase: cl() * 10, yaw: 0, roll: 0, u: spec.u ?? cl(), smoke: [] };
+  s.glow = SHIPLIGHTS[type].map((l) => shipGlow.add(0, 0, 0, l[3], l[4], l[5], l[6], l[7]));
+  if (spec.path) { s.curve = new THREE.CatmullRomCurve3(spec.path.map((p) => new THREE.Vector3(p[0], p[1], p[2])), true, 'centripetal'); s.len = s.curve.getLength(); }
+  for (const st of d.stacks) s.smoke.push(shipSmoke.add(0, 0, 0, d.smoke, 85, 7, 0.07));
+  fleet.push(s); return s;
+}
+const loopAround = (cx, cz, r, y, n = 7, jit = 0.25, rot = 0) => Array.from({ length: n }, (_, i) => { const a = rot + i / n * TAU, rr2 = r * (1 + Math.sin(i * 2.3 + rot) * jit); return [cx + Math.cos(a) * rr2, y + Math.sin(i * 1.7) * 25, cz + Math.sin(a) * rr2]; });
+addShip('human', { path: loopAround(CITY.C.x, CITY.C.z, 330, 190, 7, 0.2), speed: 11 });
+addShip('human', { path: [[-600, 210, 480], [-300, 250, 200], [0, 270, 0], [220, 240, -120], [60, 230, 300], [-380, 200, 620]], speed: 12, u: 0.4 });
+addShip('dwarf', { path: loopAround(DW.D0.x + 140, DW.D0.z - 120, 380, 430, 8, 0.25), speed: 9 });
+addShip('dwarf', { path: [[700, 260, -260], [1050, 330, -360], [1100, 440, -760], [820, 380, -520], [480, 280, -320]], speed: 10, u: 0.55 });
+addShip('elf', { path: loopAround(EC.x, EC.z, 470, 330, 8, 0.15, 0.4), speed: 13 });
+addShip('elf', { path: [[-600, 310, -300], [-200, 290, -80], [60, 340, -300], [-250, 360, -620], [-700, 330, -520]], speed: 12, u: 0.3 });
+addShip('orc', { path: loopAround(OC.x, OC.z, 340, 175, 7, 0.2, 1.0), speed: 10 });
+addShip('orc', { path: [[700, 210, 520], [300, 250, 360], [520, 280, 90], [980, 240, 310], [1100, 200, 760]], speed: 11, u: 0.7 });
+{ // ships moored to the city masts (nose into the wind)
+  const spots = cityInfo.moorings.slice(-5);
+  for (let i = 0; i < Math.min(4, spots.length); i++) addShip(i % 3 === 2 ? 'orc' : 'human', { moor: spots[i] });
+}
+const shipMeshes = {};
+for (const type in SHIPDEF) {
+  const n = fleet.filter((s) => s.type === type).length; if (!n) continue;
+  const m = new THREE.InstancedMesh(SHIPDEF[type].geo, structMat, n);
+  m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3).fill(1), 3);
+  m.frustumCulled = false; scene.add(m); shipMeshes[type] = { mesh: m, n: 0 };
+}
+let propCount = 0; for (const s of fleet) propCount += s.d.props.length;
+const propMesh = new THREE.InstancedMesh(propGeo, structMat, propCount);
+propMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(propCount * 3).fill(1), 3);
+propMesh.frustumCulled = false; scene.add(propMesh);
+const _sm = new THREE.Matrix4(), _pm2 = new THREE.Matrix4(), _spos = new THREE.Vector3(), _sq2 = new THREE.Quaternion(), _se = new THREE.Euler(), _one = new THREE.Vector3(1, 1, 1), _tan = new THREE.Vector3(), _lv = new THREE.Vector3(), _ps = new THREE.Vector3(), _pq = new THREE.Quaternion(), _zz = new THREE.Vector3(0, 0, 1);
+function updateFleet(dt, t) {
+  for (const k in shipMeshes) shipMeshes[k].n = 0;
+  let pi = 0;
+  for (const s of fleet) {
+    let vx = 0, vz = 0, pitch = 0;
+    if (s.curve) {
+      s.u = (s.u + s.spec.speed * dt / s.len) % 1;
+      s.curve.getPointAt(s.u, _spos); s.curve.getTangentAt(s.u, _tan);
+      const gh = Math.max(terrainHeight(_spos.x, _spos.z), 0) + 70; if (_spos.y < gh) _spos.y = gh;
+      const yawN = Math.atan2(_tan.x, _tan.z);
+      let dy = yawN - s.yaw; dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      s.yaw += dy * Math.min(1, dt * 2.5);
+      s.roll += (clamp(-dy * 2.2, -0.2, 0.2) - s.roll) * Math.min(1, dt * 1.5);
+      pitch = Math.asin(clamp(_tan.y, -1, 1)) * 0.5;
+      vx = _tan.x * s.spec.speed; vz = _tan.z * s.spec.speed;
+      _spos.y += Math.sin(t * 0.55 + s.phase) * 0.9;
+    } else {
+      const m = s.spec.moor, sw = Math.sin(t * 0.21 + s.phase) * 0.08;
+      s.yaw = Math.atan2(-windDir.x, -windDir.z) + sw; s.roll = Math.sin(t * 0.33 + s.phase) * 0.025;
+      const off = s.d.L / 2 + 5.5;
+      _spos.set(m.x - Math.sin(s.yaw) * off, m.y - s.d.R * 0.55 + Math.sin(t * 0.4 + s.phase) * 0.6, m.z - Math.cos(s.yaw) * off);
+    }
+    _se.set(pitch, s.yaw, s.roll, 'YXZ'); _sq2.setFromEuler(_se);
+    _sm.compose(_spos, _sq2, _one);
+    const sm = shipMeshes[s.type]; sm.mesh.setMatrixAt(sm.n++, _sm);
+    for (const p of s.d.props) {
+      _ps.set(p[0], p[1], p[2]); _pq.setFromAxisAngle(_zz, t * 14 + p[0]); _pm2.compose(_ps, _pq, _lv.set(p[3] / 2, p[3] / 2, 1)); _pm2.premultiply(_sm);
+      propMesh.setMatrixAt(pi++, _pm2);
+    }
+    for (let i = 0; i < s.d.stacks.length; i++) { _lv.set(...s.d.stacks[i]).applyMatrix4(_sm); shipSmoke.move(s.smoke[i], _lv.x, _lv.y, _lv.z, vx, vz); }
+    const lights = SHIPLIGHTS[s.type];
+    for (let i = 0; i < lights.length; i++) { _lv.set(lights[i][0], lights[i][1], lights[i][2]).applyMatrix4(_sm); shipGlow.set(s.glow[i], _lv.x, _lv.y, _lv.z); }
+  }
+  for (const k in shipMeshes) shipMeshes[k].mesh.instanceMatrix.needsUpdate = true;
+  propMesh.instanceMatrix.needsUpdate = true;
+}
+updaters.push((dt, t) => { if (shipSmoke.mesh) updateFleet(dt, t); });
+
+// @@WORLD_OBJECTS
+
+/* ======================================================================
+   6z. FINALIZE (build all batches / systems registered above)
+   ====================================================================== */
+// distance LOD for small decorative batches (landmarks such as giant trees, buildings, masts are never culled by distance)
+for (const b of [...ELSB, bushB, shroomB]) b.maxDist = 1500;
+for (const b of [barrelB, tiresB, wreckB, rockB, hayB, baleB, ...deadB, lampBatch]) b.maxDist = 1400;
+for (const b of [...ORJB]) b.maxDist = 1800;
+for (const k in treeBatch) treeBatch[k].maxDist = 2000;
+for (const f of finalizers) f();
+
+/* ======================================================================
+   7. HUD + MAIN LOOP
+   ====================================================================== */
+const fpsEl = document.getElementById('fps');
+const fpsState = { frames: 0, t: performance.now(), fps: 0 };
+function updateHud(now) {
+  fpsState.frames++;
+  if (now - fpsState.t >= 500) {
+    fpsState.fps = fpsState.frames * 1000 / (now - fpsState.t);
+    fpsState.frames = 0; fpsState.t = now;
+    const i = renderer.info.render;
+    const zone = (() => { let best = null, bd = 1e9; for (const k in ZONES) { const d = Math.hypot(camera.position.x - ZONES[k].x, camera.position.z - ZONES[k].z); if (d < bd) { bd = d; best = ZONES[k]; } } return bd < 650 ? best.name : 'Borderlands'; })();
+    fpsEl.innerHTML = `FPS ${fpsState.fps.toFixed(0)} <small>· ${(1000 / Math.max(fpsState.fps, 1)).toFixed(1)} ms</small><br>` +
+      `<small>draws ${i.calls} · tris ${(i.triangles / 1000).toFixed(0)}k · res ×${perf.ratio.toFixed(2)}<br>alt ${camera.position.y.toFixed(0)} m · ${zone}</small>`;
+  }
+}
+
+/* Adaptive resolution: keeps the frame rate stable on weaker GPUs by trading pixel density for speed. */
+const perf = { ratio: renderer.getPixelRatio(), max: renderer.getPixelRatio(), min: 0.55, ceiling: 99, acc: 0, n: 0, calm: 0, cool: 1, age: 0 };
+function applyRatio(r) { perf.ratio = r; renderer.setPixelRatio(r); renderer.setSize(window.innerWidth, window.innerHeight); }
+function adaptResolution(rawDt) {
+  if (rawDt > 0.5) return;                                  // tab was hidden / long stall: ignore
+  perf.acc += rawDt; perf.n++;
+  if (perf.acc < 1.0) return;
+  const avg = perf.acc / perf.n; perf.acc = 0; perf.n = 0; perf.age++;
+  if (perf.cool > 0) { perf.cool--; return; }
+  if (avg > 0.0215 && perf.ratio > perf.min) {              // slower than ~46 fps -> render fewer pixels
+    perf.ceiling = perf.ratio; applyRatio(Math.max(perf.min, perf.ratio * (avg > 0.034 ? 0.78 : 0.9))); perf.calm = 0; perf.cool = 2;
+  } else if (avg < 0.0178 && perf.ratio < Math.min(perf.max, perf.ceiling * 0.94)) {   // comfortably at 60 fps -> sharpen again, carefully
+    if (++perf.calm >= 4) { applyRatio(Math.min(perf.max, perf.ratio * 1.07)); perf.calm = 0; perf.cool = 2; }
+  } else perf.calm = 0;
+  if (perf.age % 40 === 0) perf.ceiling = Math.min(99, perf.ceiling * 1.08);
+}
+const clock = new THREE.Clock();
+function frame() {
+  const rawDt = clock.getDelta(); adaptResolution(rawDt);
+  const dt = Math.min(rawDt, 0.1);
+  G.uTime.value += dt;
+  updateCamera(dt);
+  for (let i = 0; i < updaters.length; i++) updaters[i](dt, G.uTime.value);
+  renderer.render(scene, camera);
+  updateHud(performance.now());
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+document.getElementById('loading').classList.add('done');
+const buildMs = Math.round(performance.now() - T_BUILD0);
+console.info(`[world] built in ${buildMs} ms · ${scene.children.length} scene objects`);
+
+// debug handle
+window.world = { THREE, scene, camera, renderer, flight, G, terrainHeight, ZONES, riverDist, riverNSx, riverEWz, updaters, TIME, setTime, sootSmoke, steamPuffs, glowSys, structMat, fleet, cloudState, cloudClusters, cityInfo, perf, buildMs, adaptResolution };
+</script>
+</body>
+</html>

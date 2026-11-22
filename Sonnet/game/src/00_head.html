@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steam Wings — Aerial Combat</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23c8993f' stroke='%231b120c' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%231b120c'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --brass: #c8993f; --brass-hi: #f0c870; --ink: #1b120c; --accent: #d9a441; --accent-dim: #7a5a1c; --accent-glow: rgba(217,164,65,.55);
+    --ok: #7be28a; --bad: #ff5a4a; --warn: #ffc247;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0f14; color: #f0e2c4;
+    font-family: "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; outline: none; }
+  body > canvas:first-child { position: fixed; inset: 0; width: 100%; height: 100%; }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .hidden { display: none !important; }
+
+  /* ---------- panels / generic ---------- */
+  .panel { position: fixed; background: linear-gradient(180deg, rgba(44,30,19,.78), rgba(24,16,10,.78)); border: 1px solid rgba(200,153,63,.55);
+    border-radius: 8px; box-shadow: 0 0 0 2px rgba(27,18,12,.8), 0 6px 22px rgba(0,0,0,.45); pointer-events: none; backdrop-filter: blur(2px); }
+  .btn { font: inherit; font-size: 16px; letter-spacing: .12em; text-transform: uppercase; color: #fff0cc; cursor: pointer; padding: 13px 28px; border-radius: 5px;
+    background: linear-gradient(#8c6a2c, #5a421b); border: 1px solid var(--brass-hi); box-shadow: 0 0 0 2px #1b120c, 0 0 18px var(--accent-glow), inset 0 1px 0 rgba(255,230,170,.4);
+    transition: filter .2s, transform .1s; pointer-events: auto; }
+  .btn:hover { filter: brightness(1.25); } .btn:active { transform: translateY(1px); }
+  .btn.small { font-size: 12px; padding: 7px 14px; }
+
+  /* ---------- loading ---------- */
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; z-index: 100; background: #120c07; color: var(--brass-hi);
+    font-size: 20px; letter-spacing: .14em; transition: opacity .8s; text-align: center; }
+  #loading.done { opacity: 0; pointer-events: none; }
+  #loading small { display: block; margin-top: 10px; font-size: 12px; letter-spacing: .08em; color: #a58d5c; }
+
+  /* ---------- FPS ---------- */
+  #fps { top: 10px; left: 10px; padding: 6px 10px; font: 600 12.5px/1.4 ui-monospace, Menlo, Consolas, monospace; color: #ffd98a; z-index: 30; }
+  #fps small { color: #b9a77c; font-weight: 400; }
+
+  /* ---------- race selection menu ---------- */
+  #menu { position: fixed; inset: 0; z-index: 40; pointer-events: none; }
+  #menu .side { position: absolute; top: 56px; left: 18px; width: min(392px, calc(100vw - 36px)); max-height: calc(100vh - 74px); overflow-y: auto; scrollbar-width: thin;
+    background: linear-gradient(180deg, rgba(44,30,19,.93), rgba(24,16,10,.93)); border: 1px solid var(--accent); border-radius: 12px; padding: 14px 14px 16px;
+    box-shadow: 0 0 0 3px #1b120c, 0 10px 34px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,220,150,.18); pointer-events: auto; transition: border-color .5s; }
+  #menu h1 { margin: 0 0 2px; font-size: 25px; letter-spacing: .1em; font-variant: small-caps; color: #fff0cc; text-shadow: 0 2px 8px rgba(0,0,0,.7); }
+  #menu .sub { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; transition: color .5s; }
+  #portraits { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
+  .portrait { position: relative; aspect-ratio: 1; padding: 0; margin: 0; cursor: pointer; overflow: hidden; border-radius: 8px; border: 2px solid #5a4630;
+    background: #1d140d; color: inherit; font: inherit; transition: border-color .3s, box-shadow .3s, transform .2s; }
+  .portrait img { width: 100%; height: 100%; display: block; object-fit: cover; filter: saturate(.55) brightness(.62); transition: filter .35s, transform .5s; }
+  .portrait:hover img { filter: saturate(.9) brightness(.9); transform: scale(1.05); }
+  .portrait span { position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 2px 4px; text-align: center; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase;
+    color: #e9d7b0; text-shadow: 0 1px 2px #000; background: linear-gradient(transparent, rgba(8,5,2,.88)); }
+  .portrait[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px #1b120c, 0 0 16px var(--accent-glow); transform: translateY(-1px); }
+  .portrait[aria-selected="true"] img { filter: none; }
+  #info-body { margin-top: 14px; transition: opacity .2s, transform .2s; }
+  #info-body.swap { opacity: 0; transform: translateY(5px); }
+  #info-name { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: .06em; font-variant: small-caps; color: #fff0cc; }
+  #info-craft { margin: 2px 0 8px; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+  #info-desc { margin: 0 0 10px; font-size: 14px; line-height: 1.5; color: #e6d6b4; }
+  #info-weap { margin: 0 0 12px; font-size: 12.5px; line-height: 1.5; color: #cdb98d; border-left: 2px solid var(--accent); padding-left: 9px; }
+  #info-weap b { color: #fff0cc; font-weight: 600; }
+  .stat { display: grid; grid-template-columns: 108px 1fr 22px; align-items: center; gap: 10px; margin: 6px 0; font-size: 12.5px; letter-spacing: .05em; color: #d8c49a; }
+  .stat b { text-align: right; color: #fff0cc; font-weight: 600; }
+  .bar { position: relative; height: 11px; border: 1px solid #5a4630; border-radius: 3px; background: #140d08; overflow: hidden; }
+  .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: calc(var(--v, 0) * 100%); background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+    box-shadow: 0 0 10px var(--accent-glow); transition: width .9s cubic-bezier(.2,.85,.25,1), background .5s; }
+  .bar::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), rgba(12,7,3,.95) calc(10% - 2px) 10%); }
+  #menu .go { display: flex; gap: 10px; align-items: center; margin-top: 16px; }
+  #menu .keys { margin-top: 12px; font-size: 11.5px; line-height: 1.65; color: #b9a77c; }
+  #menu .keys b { color: #ffd98a; font-weight: 600; display: inline-block; min-width: 64px; }
+  #menu .foot { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); font-size: 12px; letter-spacing: .08em; color: rgba(240,226,196,.6); text-shadow: 0 1px 3px #000; white-space: nowrap; }
+  #menu .times { position: absolute; right: 18px; top: 56px; display: flex; gap: 8px; pointer-events: auto; }
+
+  /* ---------- in-game HUD ---------- */
+  #hud { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+  #overlay { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 21; pointer-events: none; }
+  #dmg { position: fixed; inset: 0; z-index: 22; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, transparent 45%, rgba(190,20,10,.62) 100%); }
+  #hud .panel { z-index: 25; }
+  #hud-bl { left: 14px; bottom: 14px; width: 262px; padding: 10px 12px 11px; }
+  #hud-bl .role { display: flex; align-items: center; justify-content: space-between; font-size: 12px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin-bottom: 7px; }
+  #hud-bl .role b { font-size: 19px; letter-spacing: .12em; color: #fff0cc; font-variant: small-caps; }
+  #hud-bl .role kbd, .kbd { font: 600 11px ui-monospace, Menlo, monospace; padding: 1px 6px; border: 1px solid var(--brass); border-radius: 3px; color: var(--brass-hi); background: rgba(0,0,0,.4); }
+  .row { display: grid; grid-template-columns: 62px 1fr 56px; gap: 8px; align-items: center; margin: 5px 0; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: #cdb98d; }
+  .row b { text-align: right; font: 600 12.5px ui-monospace, Menlo, monospace; color: #fff0cc; letter-spacing: 0; }
+  .meter { position: relative; height: 10px; border: 1px solid #5a4630; border-radius: 2px; background: #140d08; overflow: hidden; }
+  .meter i { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; transform-origin: left; background: var(--ok); transition: background .2s; }
+  .meter.heat i { background: linear-gradient(90deg, #ffd25a, #ff5a2a); }
+  .meter.thr i { background: linear-gradient(90deg, #8c6a2c, #f0c870); }
+  .meter.ammo i { background: linear-gradient(90deg, #7ab6ff, #bfe0ff); }
+  .meter.lock i { background: var(--bad) !important; }
+  .nums { display: flex; justify-content: space-between; margin-top: 8px; font: 600 13px ui-monospace, Menlo, monospace; color: #ffe9b0; }
+  .nums small { font: 400 9.5px "Palatino Linotype", serif; letter-spacing: .12em; color: #a58d5c; display: block; text-transform: uppercase; }
+  #hud-bc { left: 50%; bottom: 14px; transform: translateX(-50%); width: 330px; padding: 9px 12px; }
+  #hud-bc .row { grid-template-columns: 96px 1fr 64px; }
+  #hud-tc { left: 50%; top: 10px; transform: translateX(-50%); padding: 6px 10px; display: flex; gap: 10px; }
+  .team { display: flex; align-items: center; gap: 7px; padding: 3px 9px 3px 7px; border-radius: 5px; border: 1px solid rgba(255,255,255,.14); background: rgba(0,0,0,.35); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+  .team i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; box-shadow: 0 0 8px currentColor; background: currentColor; }
+  .team b { font: 700 15px ui-monospace, Menlo, monospace; color: #fff0cc; }
+  .team.me { border-color: var(--brass-hi); background: rgba(120,90,30,.35); }
+  .team.dead { opacity: .35; text-decoration: line-through; }
+  #hud-tr { right: 14px; top: 10px; width: 204px; padding: 6px; }
+  #radar { width: 190px; height: 190px; display: block; border-radius: 50%; }
+  #feed { position: fixed; right: 14px; top: 232px; width: 290px; z-index: 25; pointer-events: none; text-align: right; font-size: 12.5px; text-shadow: 0 1px 3px #000, 0 0 6px #000; }
+  #feed div { margin: 2px 0; padding: 2px 8px; background: rgba(15,9,5,.55); border-radius: 3px; display: block; animation: feedin .25s; transition: opacity .6s; }
+  #feed div.out { opacity: 0; }
+  @keyframes feedin { from { transform: translateX(30px); opacity: 0; } }
+  #hud-br { right: 14px; bottom: 14px; padding: 9px 13px; font-size: 12px; line-height: 1.65; color: #cdb98d; }
+  #hud-br b { color: #ffd98a; font-weight: 600; display: inline-block; min-width: 62px; }
+  #warn { position: fixed; left: 50%; top: 22%; transform: translateX(-50%); z-index: 26; pointer-events: none; text-align: center; font-size: 26px; font-weight: 700; letter-spacing: .2em;
+    color: var(--bad); text-shadow: 0 0 14px rgba(255,60,30,.7), 0 2px 4px #000; text-transform: uppercase; opacity: 0; transition: opacity .15s; }
+  #warn.show { opacity: 1; animation: blink .5s steps(2) infinite; } @keyframes blink { 50% { opacity: .35; } }
+  #toast { position: fixed; left: 50%; top: 13%; transform: translateX(-50%); z-index: 26; pointer-events: none; text-align: center; font-size: 15px; letter-spacing: .12em; color: #ffe9b0;
+    text-shadow: 0 2px 6px #000; text-transform: uppercase; opacity: 0; transition: opacity .4s; }
+  #toast.show { opacity: 1; }
+  #capture { position: fixed; left: 50%; top: 21%; transform: translateX(-50%); z-index: 26; pointer-events: none; padding: 8px 16px; font-size: 14px; letter-spacing: .12em; color: #ffe9b0; text-transform: uppercase; }
+  #spec { left: 50%; top: 58px; transform: translateX(-50%); padding: 7px 16px; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: #ffe9b0; text-align: center; }
+  #spec b { color: #fff; }
+
+  /* ---------- end screen ---------- */
+  #end { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(10,6,3,.55), rgba(5,3,1,.88)); }
+  #end .card { text-align: center; padding: 34px 56px 38px; border: 1px solid var(--accent); border-radius: 14px; background: linear-gradient(180deg, rgba(44,30,19,.95), rgba(24,16,10,.95));
+    box-shadow: 0 0 0 3px #1b120c, 0 20px 60px rgba(0,0,0,.7), 0 0 40px var(--accent-glow); }
+  #end h2 { margin: 0 0 6px; font-size: 54px; letter-spacing: .14em; font-variant: small-caps; color: #fff0cc; text-shadow: 0 0 24px var(--accent-glow); }
+  #end p { margin: 0 0 22px; font-size: 15px; letter-spacing: .08em; color: #d8c49a; }
+  #end .stats { display: flex; gap: 26px; justify-content: center; margin: 0 0 24px; font: 600 15px ui-monospace, Menlo, monospace; color: #ffe9b0; }
+  #end .stats small { display: block; font: 400 10px "Palatino Linotype", serif; letter-spacing: .14em; color: #a58d5c; text-transform: uppercase; }
+  #end .row2 { display: flex; gap: 12px; justify-content: center; }
+  #end.win h2 { color: #b8ffb0; } #end.lose h2 { color: #ffb0a0; }
+
+  /* hidden hooks required by the world's day/night code */
+  #worldTime { display: none; }
+
+  @media (max-width: 760px) { #hud-br, #feed { display: none; } #hud-tr { transform: scale(.8); transform-origin: top right; } }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="loading"><div>Forging the world…<small id="loading-msg">stoking the boilers</small></div></div>
+<div id="fps" class="panel mono">FPS —</div>
+
+<div id="worldTime"><span id="clock"></span><span id="phase"></span><input id="timeSlider" type="range" min="0" max="24" step="0.01" value="15"><button id="btnPause"></button><button id="btnSpeed"></button></div>
+
+<!-- race selection -->
+<div id="menu" class="hidden">
+  <div class="side">
+    <h1>Steam Wings</h1>
+    <div class="sub">Aerial combat · four teams · one sky</div>
+    <div id="portraits" role="tablist" aria-label="Races"></div>
+    <div id="info-body">
+      <h2 id="info-name"></h2>
+      <div id="info-craft"></div>
+      <p id="info-desc"></p>
+      <p id="info-weap"></p>
+      <div id="stats"></div>
+    </div>
+    <div class="go"><button class="btn" id="btn-start">Take to the skies</button></div>
+    <div class="keys">
+      <b>Mouse</b> steer · aim turret<br><b>W / S</b> throttle · <b>A / D</b> roll<br>
+      <b>LMB</b> fire · <b>C</b> switch pilot ⇄ gunner<br><b>1–4</b> choose race · <b>Enter</b> start
+    </div>
+  </div>
+  <div class="times">
+    <button class="btn small" data-time="9">Morning</button><button class="btn small" data-time="14">Day</button>
+    <button class="btn small" data-time="18.6">Dusk</button><button class="btn small" data-time="23">Night</button>
+  </div>
+  <div class="foot">Four teams of three aircraft — everyone fights everyone. Last team in the air wins.</div>
+</div>
+
+<!-- in-game HUD -->
+<div id="hud" class="hidden">
+  <div id="hud-bl" class="panel">
+    <div class="role"><span>Role</span><b id="h-role">Pilot</b><kbd>C</kbd></div>
+    <div class="row"><span>Hull</span><div class="meter"><i id="h-hp"></i></div><b id="h-hpn">100</b></div>
+    <div class="row"><span>Throttle</span><div class="meter thr"><i id="h-thr"></i></div><b id="h-thrn">60%</b></div>
+    <div class="nums"><div><small>Speed km/h</small><span id="h-spd">0</span></div><div><small>Altitude m</small><span id="h-alt">0</span></div><div><small>Heading</small><span id="h-hdg">N</span></div></div>
+  </div>
+  <div id="hud-bc" class="panel">
+    <div class="row"><span id="h-w1n">Guns</span><div class="meter heat" id="h-w1m"><i id="h-w1"></i></div><b id="h-w1t">OK</b></div>
+    <div class="row"><span id="h-w2n">Turret</span><div class="meter ammo" id="h-w2m"><i id="h-w2"></i></div><b id="h-w2t">0</b></div>
+  </div>
+  <div id="hud-tc" class="panel"></div>
+  <div id="hud-tr" class="panel"><canvas id="radar" width="380" height="380"></canvas></div>
+  <div id="feed"></div>
+  <div id="hud-br" class="panel"></div>
+  <div id="spec" class="panel hidden"></div>
+</div>
+<canvas id="overlay" class="hidden"></canvas>
+<div id="dmg"></div>
+<div id="warn"></div>
+<div id="toast"></div>
+<div id="capture" class="panel hidden">Click to capture the mouse · Esc to release</div>
+
+<div id="end" class="hidden">
+  <div class="card">
+    <h2 id="end-title">Victory</h2><p id="end-sub"></p>
+    <div class="stats" id="end-stats"></div>
+    <div class="row2"><button class="btn" id="btn-restart">Fly again</button><button class="btn" id="btn-menu">Choose race</button></div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
